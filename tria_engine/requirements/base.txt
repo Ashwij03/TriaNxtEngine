@@ -1,0 +1,29 @@
+Django>=4.2,<5.0
+djangorestframework>=3.14
+
+# Database
+psycopg2-binary>=2.9
+
+# Environment variables
+python-dotenv>=1.0
+
+# CORS (frontend integration)
+django-cors-headers>=4.3
+
+# Storage (for documents later)
+django-storages>=1.14
+boto3>=1.34
+
+# Filtering (optional but useful)
+django-filter>=23.5
+
+# Swagger
+drf_yasg
+
+python -m pip install "django[argon2]"
+
+
+python -m pip install "pillow"
+
+
+pip install cryptography
