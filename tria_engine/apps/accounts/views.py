@@ -1197,8 +1197,6 @@ class ProfilePhotoDeleteAPI(APIView):
         return Response(result, status=200)
 
 
-
-# class for upload api
 class UploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
