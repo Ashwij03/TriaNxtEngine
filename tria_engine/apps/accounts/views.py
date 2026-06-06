@@ -6,10 +6,11 @@ from django.http import FileResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.views import APIView
+from rest_framework.views import APIView as DRFAPIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.exceptions import MethodNotAllowed, ValidationError
 
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
@@ -22,7 +23,7 @@ from .serializers import (
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability
 )
 from .models import User, UploadedDocument
 from .audit import log_audit_event
@@ -32,6 +33,62 @@ from .audit import log_audit_event
 OTP_STORAGE = {}
 otp_storage = {}
 otp_expiry = {}
+
+
+# API VALIDATION CHANGE: All account APIs inherit this local APIView wrapper.
+# It validates endpoint availability for correct method and required headers
+# before the existing API logic runs.
+class APIView(DRFAPIView):
+    # API VALIDATION CHANGE: Default HTTP method behavior for account APIs.
+    # POST/PUT/PATCH require a body; GET/DELETE should normally not send one.
+    body_required_methods = {"POST", "PUT", "PATCH"}
+    body_forbidden_methods = {"GET", "DELETE"}
+
+    def initial(self, request, *args, **kwargs):
+        allowed_content_types = [
+            "application/json",
+            "multipart/form-data",
+            "application/x-www-form-urlencoded",
+        ]
+
+        if (
+            "parser_classes" in self.__class__.__dict__ and
+            MultiPartParser in self.parser_classes
+        ):
+            allowed_content_types = [
+                "multipart/form-data",
+                "application/x-www-form-urlencoded",
+            ]
+
+        requires_auth = not any(
+            permission_class is AllowAny
+            for permission_class in self.permission_classes
+        )
+
+        validation_errors, status_code = validate_api_endpoint_availability(
+            request=request,
+            allowed_methods=self.allowed_methods,
+            requires_auth=requires_auth,
+            allowed_content_types=allowed_content_types,
+            body_required_methods=self.body_required_methods,
+            body_forbidden_methods=self.body_forbidden_methods,
+        )
+
+        if validation_errors:
+            if status_code == 405:
+                raise MethodNotAllowed(
+                    request.method,
+                    detail=validation_errors.get("method"),
+                )
+
+            raise ValidationError(
+                {
+                    "message": "API validation failed",
+                    "errors": validation_errors,
+                }
+            )
+
+        return super().initial(request, *args, **kwargs)
 
 
 class RegisterAPI(APIView):
@@ -549,6 +606,9 @@ class ChangePasswordAPI(APIView):
 
 class CompromisedTokenReportAPI(APIView):
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: This POST endpoint receives token_type in the query
+    # string, so it does not require a request body.
+    body_required_methods = set()
 
     @swagger_auto_schema(
         manual_parameters=[
@@ -1114,6 +1174,10 @@ class UploadFormAPI(APIView):
 class DeleteUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: This DELETE endpoint uses request.data because the
+    # existing serializer validates user_id and form_id from the request body.
+    body_required_methods = {"DELETE"}
+    body_forbidden_methods = {"GET"}
 
     @swagger_auto_schema(
         request_body=DeleteUploadFormSerializer

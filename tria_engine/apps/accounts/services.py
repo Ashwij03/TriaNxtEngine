@@ -24,6 +24,105 @@ from .file_validators import (
 User = get_user_model()
 
 
+# API VALIDATION CHANGE: Central endpoint availability validation for correct
+# method and headers. URL correctness is confirmed by Django before a view is
+# reached; this service validates the resolved endpoint request details.
+def validate_api_endpoint_availability(
+    *,
+    request,
+    allowed_methods,
+    requires_auth=False,
+    allowed_content_types=None,
+    body_required_methods=None,
+    body_forbidden_methods=None,
+):
+    from django.conf import settings
+    from rest_framework.exceptions import ValidationError
+
+    from .serializers import EndpointAvailabilitySerializer
+
+    method = request.method.upper()
+    allowed_methods = [
+        allowed_method.upper()
+        for allowed_method in allowed_methods
+    ]
+    # API VALIDATION CHANGE: Server-side HTTP method behavior rules for
+    # GET, POST, PUT, PATCH, and DELETE.
+    default_body_required_methods = {"POST", "PUT", "PATCH"}
+    if body_required_methods is None:
+        body_required_methods = default_body_required_methods
+
+    body_required_methods = {
+        method_name.upper()
+        for method_name in body_required_methods
+    }
+
+    default_body_forbidden_methods = {"GET", "DELETE"}
+    if body_forbidden_methods is None:
+        body_forbidden_methods = default_body_forbidden_methods
+
+    body_forbidden_methods = {
+        method_name.upper()
+        for method_name in body_forbidden_methods
+    }
+    content_length = request.META.get("CONTENT_LENGTH")
+    has_request_body = bool(
+        content_length and
+        content_length != "0"
+    )
+    method_requires_body = method in body_required_methods
+    method_allows_body = method not in body_forbidden_methods
+    requires_auth_header = requires_auth and method != "OPTIONS"
+    session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
+    request_user = getattr(request, "user", None)
+
+    serializer = EndpointAvailabilitySerializer(
+        data={
+            "path": request.path,
+            "method": method,
+            "allowed_methods": allowed_methods,
+            "supported_behavior_methods": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+            ],
+            "method_requires_body": method_requires_body,
+            "has_request_body": has_request_body,
+            "method_allows_body": method_allows_body,
+            "content_type": getattr(request, "content_type", None),
+            "requires_auth": requires_auth_header,
+            "has_auth_header": bool(
+                request.META.get("HTTP_AUTHORIZATION")
+            ),
+            "has_session_cookie": bool(
+                request.COOKIES.get(session_cookie_name)
+            ),
+            "has_authenticated_user": bool(
+                getattr(request_user, "is_authenticated", False)
+            ),
+            "has_resolver_match": bool(
+                getattr(request, "resolver_match", None)
+            ),
+            "requires_body_header": method_requires_body,
+            "allowed_content_types": allowed_content_types or [
+                "application/json",
+                "multipart/form-data",
+                "application/x-www-form-urlencoded",
+            ],
+        }
+    )
+
+    try:
+        serializer.is_valid(raise_exception=True)
+    except ValidationError:
+        status_code = 405 if method not in allowed_methods else 400
+        return serializer.errors, status_code
+
+    return None, None
+
+
 def _security_setting(name, default):
     security = getattr(settings, "TRIA_SECURITY", {})
     return security.get(name, default)
