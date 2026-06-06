@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from tria_engine.apps.organizations.models import Organization
-from .models import Patient, UploadedDocument, UploadForm, AuditLog
+from .models import  UploadedDocument, UploadForm, AuditLog
 
 User = get_user_model()
 
@@ -14,6 +14,27 @@ class UserListSerializer(serializers.ModelSerializer):
 
 
 class RegisterSerializer(serializers.ModelSerializer):
+    def validate(self, data):
+
+        required_fields = [
+            "username",
+            "email",
+            "password",
+            "confirm_password"
+        ]
+
+        for field in required_fields:
+            if not data.get(field):
+                raise serializers.ValidationError(
+                    {field: f"{field} is required"}
+                )
+
+        if data["password"] != data["confirm_password"]:
+            raise serializers.ValidationError(
+                "Passwords do not match"
+            )
+
+        return data
     confirm_password = serializers.CharField(write_only=True)
 
     class Meta:
@@ -81,6 +102,19 @@ class LoginSerializer(serializers.Serializer):
 class LoginMFASerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(write_only=True)
+    def validate(self, data):
+
+        if not data.get("email"):
+            raise serializers.ValidationError(
+                {"email": "Email is required"}
+            )
+
+        if not data.get("password"):
+            raise serializers.ValidationError(
+                {"password": "Password is required"}
+            )
+
+        return data
 
 
 class VerifyLoginOTPSerializer(serializers.Serializer):
@@ -100,6 +134,19 @@ class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     otp_code = serializers.CharField(max_length=6, required=True)
     new_password = serializers.CharField(write_only=True)
+    def validate(self, data):
+
+        if not data.get("email"):
+            raise serializers.ValidationError(
+                {"email": "Email is required"}
+            )
+
+        if not data.get("password"):
+            raise serializers.ValidationError(
+                {"password": "Password is required"}
+            )
+
+        return data
 
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -110,103 +157,49 @@ class ChangePasswordSerializer(serializers.Serializer):
     confirm_password = serializers.CharField(write_only=True, required=True)
 
     def validate(self, data):
-        if data["new_password"] != data["confirm_password"]:
-            raise serializers.ValidationError("New passwords do not match")
-        
-        if data["current_password"] == data["new_password"]:
-            raise serializers.ValidationError("New password must be different from current password")
-        
-        return data
-    
 
-class PatientSerializer(serializers.ModelSerializer):
-    site = serializers.PrimaryKeyRelatedField(queryset=Organization.objects.all())
-    first_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    last_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    date_of_birth = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    email = serializers.EmailField(required=False, allow_null=True)
-    phone = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    address = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    medical_record_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-
-    class Meta:
-        model = Patient
-        fields = [
-            "id", "patient_id", "status", "site",
-            "first_name", "last_name", "date_of_birth",
-            "email", "phone", "address", "medical_record_number",
-            "created_at", "updated_at",
+        required_fields = [
+            "email",
+            "current_password",
+            "new_password",
+            "confirm_password"
         ]
-        read_only_fields = ["id", "patient_id", "created_at", "updated_at"]
 
-    def validate_site(self, value):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if user and user.is_authenticated and not user.is_superuser:
-            if not user.organization_id or value.id != user.organization_id:
-                raise serializers.ValidationError("You can only assign patients to your own organization")
-        return value
+        for field in required_fields:
+            if not data.get(field):
+                raise serializers.ValidationError(
+                    {field: f"{field} is required"}
+                )
 
-    def to_representation(self, instance):
-        ret = super().to_representation(instance)
-        pii = instance.get_pii()
-        ret["first_name"] = pii.get("first_name")
-        ret["last_name"] = pii.get("last_name")
-        ret["date_of_birth"] = pii.get("date_of_birth")
-        ret["email"] = pii.get("email")
-        ret["phone"] = pii.get("phone")
-        ret["address"] = pii.get("address")
-        ret["medical_record_number"] = pii.get("medical_record_number")
-        return ret
+        if data["new_password"] != data["confirm_password"]:
+            raise serializers.ValidationError(
+                "New passwords do not match"
+            )
 
-    def create(self, validated_data):
-        first_name = validated_data.pop("first_name", None)
-        last_name = validated_data.pop("last_name", None)
-        date_of_birth = validated_data.pop("date_of_birth", None)
-        email = validated_data.pop("email", None)
-        phone = validated_data.pop("phone", None)
-        address = validated_data.pop("address", None)
-        medical_record_number = validated_data.pop("medical_record_number", None)
+        if data["current_password"] == data["new_password"]:
+            raise serializers.ValidationError(
+                "New password must be different from current password"
+            )
 
-        patient = Patient.objects.create(**validated_data)
-        patient.set_pii(
-            first_name=first_name,
-            last_name=last_name,
-            dob=date_of_birth,
-            email=email,
-            phone=phone,
-            address=address,
-            mrn=medical_record_number,
-        )
-        patient.save()
-        return patient
+        return data
 
-    def update(self, instance, validated_data):
-        first_name = validated_data.pop("first_name", None)
-        last_name = validated_data.pop("last_name", None)
-        date_of_birth = validated_data.pop("date_of_birth", None)
-        email = validated_data.pop("email", None)
-        phone = validated_data.pop("phone", None)
-        address = validated_data.pop("address", None)
-        medical_record_number = validated_data.pop("medical_record_number", None)
-
-        instance.status = validated_data.get("status", instance.status)
-        instance.site = validated_data.get("site", instance.site)
-
-        instance.set_pii(
-            first_name=first_name,
-            last_name=last_name,
-            dob=date_of_birth,
-            email=email,
-            phone=phone,
-            address=address,
-            mrn=medical_record_number,
-        )
-        instance.save()
-        return instance
-    
-    
 class DocumentUploadSerializer(serializers.Serializer):
+    
+    def validate(self, data):
+
+        required_fields = [
+            "user_id",
+            "uploaded_by",
+            "file"
+        ]
+
+        for field in required_fields:
+            if not data.get(field):
+                raise serializers.ValidationError(
+                    {field: f"{field} is required"}
+                )
+
+        return data
 
     user_id = serializers.IntegerField()
 
@@ -264,6 +257,22 @@ class UploadFormSerializer(serializers.ModelSerializer):
             "file",
         ]
 
+    def validate(self, data):
+
+        required_fields = [
+            "user_id",
+            "uploaded_by",
+            "file"
+        ]
+    
+        for field in required_fields:
+            if not data.get(field):
+                raise serializers.ValidationError(
+                    {field: f"{field} is required"}
+                )
+    
+        return data
+
 
 class DeleteUploadFormSerializer(
     serializers.Serializer
@@ -296,8 +305,22 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     user_id = serializers.IntegerField()
 
-    def validate_photo(self, value):
+    def validate_photo(self, data, value):
         import os
+
+        required_fields = [
+            "photo",
+            "email",
+            "user_id"
+        ]
+
+        for field in required_fields:
+            if not data.get(field):
+                raise serializers.ValidationError(
+                    {field: f"{field} is required"}
+                )
+
+        return data
 
         ext = os.path.splitext(value.name)[1].lower()
         allowed_extensions = [".png", ".jpg", ".jpeg"]
