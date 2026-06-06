@@ -13,8 +13,6 @@ from .views import (
     ResetPasswordAPI,
     ChangePasswordAPI,
     CompromisedTokenReportAPI,
-    PatientListCreateAPI,
-    PatientDetailAPI,
     DocumentListAPI,
     DocumentUploadAPI,
     DocumentDownloadAPI,
@@ -89,20 +87,6 @@ urlpatterns = [
         CompromisedTokenReportAPI.as_view(),
         name="report-compromised-token-api"
     ),
-
-
-    path(
-        "patients/",
-        PatientListCreateAPI.as_view(),
-        name="patient-list-create"
-    ),
-
-    path(
-        "patients/<int:pk>/",
-        PatientDetailAPI.as_view(),
-        name="patient-detail"
-    ),
-
     path(
         "documents/",
         DocumentListAPI.as_view(),

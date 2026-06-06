@@ -1,7 +1,7 @@
 # apps/accounts/admin.py
 
 from django.contrib import admin
-from .models import User, PasswordResetToken, LoginOTP, Patient, MedicalRecord, UploadedDocument, UploadForm
+from .models import User, PasswordResetToken, LoginOTP, UploadedDocument, UploadForm
 
 
 @admin.register(User)
@@ -25,22 +25,6 @@ class LoginOTPAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "otp_code", "is_used", "expires_at", "created_at")
     search_fields = ("user__email", "otp_code")
     list_filter = ("is_used", "created_at", "expires_at")
-    ordering = ("-id",)
-
-
-@admin.register(Patient)
-class PatientAdmin(admin.ModelAdmin):
-    list_display = ("id", "patient_id", "status", "site", "created_at", "updated_at")
-    search_fields = ("patient_id",)
-    list_filter = ("status", "site", "created_at")
-    ordering = ("-id",)
-
-
-@admin.register(MedicalRecord)
-class MedicalRecordAdmin(admin.ModelAdmin):
-    list_display = ("id", "patient", "created_at", "updated_at")
-    search_fields = ("patient__patient_id", "diagnosis")
-    list_filter = ("created_at", "updated_at")
     ordering = ("-id",)
 
 

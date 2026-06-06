@@ -17,7 +17,7 @@ from drf_yasg import openapi
 
 from .serializers import (
     UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
-    IntegritySerializer, PatientSerializer,
+    IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
     ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer
 )
@@ -25,7 +25,7 @@ from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
     reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability
 )
-from .models import User, Patient, UploadedDocument
+from .models import User, UploadedDocument
 from .audit import log_audit_event
 
 # User = get_user_model()
@@ -691,156 +691,6 @@ class IntegrityCheckAPI(APIView):
             response,
             status=200
         )
-
-
-@method_decorator(csrf_exempt, name="dispatch")
-class PatientListCreateAPI(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self, request):
-        if request.user.is_superuser:
-            return Patient.objects.all().order_by("id")
-        return Patient.objects.filter(site=request.user.organization).order_by("id")
-
-    @swagger_auto_schema(responses={200: PatientSerializer(many=True)})
-    def get(self, request):
-        patients = self.get_queryset(request)
-        serializer = PatientSerializer(patients, many=True, context={"request": request})
-        log_audit_event("patient_list_viewed", user=request.user, request=request)
-        
-        create_audit_log(
-            user=request.user,
-            action="VIEW_PATIENTS",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} viewed patient list",
-            signature_meaning="Viewed patient records"
-        )
-        
-        return Response(serializer.data, status=200)
-
-    @swagger_auto_schema(request_body=PatientSerializer, responses={201: PatientSerializer})
-    def post(self, request):
-        serializer = PatientSerializer(data=request.data, context={"request": request})
-        if serializer.is_valid():
-            patient = serializer.save()
-            log_audit_event("patient_created", user=request.user, patient=patient, request=request)
-            
-            create_audit_log(
-                user=request.user,
-                action="CREATE_PATIENT",
-                ip_address=request.META.get('REMOTE_ADDR'),
-                description=f"{request.user.username} created patient {patient.id}",
-                signature_meaning="Patient creation electronically signed"
-            )
-            
-            return Response(
-                {
-                    "message": "Patient created",
-                    "data": PatientSerializer(patient, context={"request": request}).data,
-                },
-                status=201,
-            )
-        
-        create_audit_log(
-            user=request.user,
-            action="FAILED_CREATE_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} failed to create patient",
-            signature_meaning="Failed patient creation"
-        )
-        
-        return Response(serializer.errors, status=400)
-
-
-@method_decorator(csrf_exempt, name="dispatch")
-class PatientDetailAPI(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get_object(self, request, pk):
-        try:
-            patient = Patient.objects.get(pk=pk)
-        except Patient.DoesNotExist:
-            return None
-
-        if request.user.is_superuser:
-            return patient
-
-        if not request.user.organization_id:
-            return None
-
-        if patient.site_id != request.user.organization_id:
-            return None
-
-        return patient
-
-    @swagger_auto_schema(responses={200: PatientSerializer})
-    def get(self, request, pk):
-        patient = self.get_object(request, pk)
-        if patient is None:
-            return Response({"message": "Not found or Forbidden"}, status=403)
-
-        log_audit_event("patient_viewed", user=request.user, patient=patient, request=request)
-        
-        create_audit_log(
-            user=request.user,
-            action="VIEW_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} viewed patient {patient.id}",
-            signature_meaning="Patient record viewed"
-        )
-        
-        return Response(PatientSerializer(patient, context={"request": request}).data, status=200)
-
-    @swagger_auto_schema(request_body=PatientSerializer, responses={200: PatientSerializer})
-    def put(self, request, pk):
-        patient = self.get_object(request, pk)
-        if patient is None:
-            return Response({"message": "Not found or Forbidden"}, status=403)
-
-        serializer = PatientSerializer(patient, data=request.data, partial=True, context={"request": request})
-        if serializer.is_valid():
-            serializer.save()
-            log_audit_event("patient_updated", user=request.user, patient=patient, request=request)
-            
-            create_audit_log(
-                user=request.user,
-                action="UPDATE_PATIENT",
-                ip_address=request.META.get('REMOTE_ADDR'),
-                description=f"{request.user.username} updated patient {patient.id}",
-                signature_meaning="Patient update electronically signed"
-            )
-            
-            return Response({"message": "Patient updated"}, status=200)
-        
-        create_audit_log(
-            user=request.user,
-            action="UPDATE_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} updated patient {patient.id}",
-            signature_meaning="Patient update electronically signed"
-        )
-
-        return Response(serializer.errors, status=400)
-
-    def delete(self, request, pk):
-        patient = self.get_object(request, pk)
-        if patient is None:
-            return Response({"message": "Not found or Forbidden"}, status=403)
-
-        log_audit_event("patient_deleted", user=request.user, patient=patient, request=request)
-        
-        create_audit_log(
-            user=request.user,
-            action="DELETE_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} deleted patient {patient.id}",
-            signature_meaning="Patient deletion electronically signed"
-        )
-        
-        patient.delete()
-        return Response({"message": "Patient deleted"}, status=200)
-
-
 class DocumentListAPI(APIView):
     permission_classes = [IsAuthenticated]
 
