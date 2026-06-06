@@ -6,6 +6,84 @@ from .models import Patient, UploadedDocument, UploadForm, AuditLog
 User = get_user_model()
 
 
+# API VALIDATION CHANGE: Serializer used by the service layer to validate endpoint
+# availability checks for URL resolution, HTTP method, and required headers.
+class EndpointAvailabilitySerializer(serializers.Serializer):
+    path = serializers.CharField(required=True)
+    method = serializers.CharField(required=True)
+    allowed_methods = serializers.ListField(
+        child=serializers.CharField(),
+        allow_empty=False,
+    )
+    content_type = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+    requires_auth = serializers.BooleanField(default=False)
+    has_auth_header = serializers.BooleanField(default=False)
+    has_session_cookie = serializers.BooleanField(default=False)
+    has_authenticated_user = serializers.BooleanField(default=False)
+    has_resolver_match = serializers.BooleanField(default=True)
+    requires_body_header = serializers.BooleanField(default=False)
+    allowed_content_types = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_empty=True,
+    )
+
+    def validate(self, data):
+        errors = {}
+        method = data["method"].upper()
+        allowed_methods = [
+            allowed_method.upper()
+            for allowed_method in data["allowed_methods"]
+        ]
+
+        if method not in allowed_methods:
+            errors["method"] = (
+                f"{method} method is not allowed for this endpoint. "
+                f"Allowed methods: {', '.join(allowed_methods)}."
+            )
+
+        if not data["has_resolver_match"]:
+            errors["url"] = "Requested URL does not match an available API endpoint."
+
+        if data["requires_auth"] and not (
+            data["has_auth_header"] or
+            data["has_session_cookie"] or
+            data["has_authenticated_user"]
+        ):
+            errors["headers"] = (
+                "Authorization header or active session cookie is required "
+                "for this endpoint."
+            )
+
+        content_type = (data.get("content_type") or "").lower()
+        allowed_content_types = [
+            allowed_type.lower()
+            for allowed_type in data.get("allowed_content_types", [])
+        ]
+
+        if data["requires_body_header"]:
+            if not content_type:
+                errors["content_type"] = (
+                    "Content-Type header is required for this endpoint."
+                )
+            elif allowed_content_types and not any(
+                content_type.startswith(allowed_type)
+                for allowed_type in allowed_content_types
+            ):
+                errors["content_type"] = (
+                    "Invalid Content-Type header. Allowed values: "
+                    f"{', '.join(allowed_content_types)}."
+                )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return data
+
 
 class UserListSerializer(serializers.ModelSerializer):
     class Meta:
