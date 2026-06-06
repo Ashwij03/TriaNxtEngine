@@ -39,6 +39,11 @@ otp_expiry = {}
 # It validates endpoint availability for correct method and required headers
 # before the existing API logic runs.
 class APIView(DRFAPIView):
+    # API VALIDATION CHANGE: Default HTTP method behavior for account APIs.
+    # POST/PUT/PATCH require a body; GET/DELETE should normally not send one.
+    body_required_methods = {"POST", "PUT", "PATCH"}
+    body_forbidden_methods = {"GET", "DELETE"}
+
     def initial(self, request, *args, **kwargs):
         allowed_content_types = [
             "application/json",
@@ -65,6 +70,8 @@ class APIView(DRFAPIView):
             allowed_methods=self.allowed_methods,
             requires_auth=requires_auth,
             allowed_content_types=allowed_content_types,
+            body_required_methods=self.body_required_methods,
+            body_forbidden_methods=self.body_forbidden_methods,
         )
 
         if validation_errors:
@@ -599,6 +606,9 @@ class ChangePasswordAPI(APIView):
 
 class CompromisedTokenReportAPI(APIView):
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: This POST endpoint receives token_type in the query
+    # string, so it does not require a request body.
+    body_required_methods = set()
 
     @swagger_auto_schema(
         manual_parameters=[
@@ -1314,6 +1324,10 @@ class UploadFormAPI(APIView):
 class DeleteUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: This DELETE endpoint uses request.data because the
+    # existing serializer validates user_id and form_id from the request body.
+    body_required_methods = {"DELETE"}
+    body_forbidden_methods = {"GET"}
 
     @swagger_auto_schema(
         request_body=DeleteUploadFormSerializer

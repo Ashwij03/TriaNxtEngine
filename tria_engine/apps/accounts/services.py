@@ -33,6 +33,8 @@ def validate_api_endpoint_availability(
     allowed_methods,
     requires_auth=False,
     allowed_content_types=None,
+    body_required_methods=None,
+    body_forbidden_methods=None,
 ):
     from django.conf import settings
     from rest_framework.exceptions import ValidationError
@@ -44,7 +46,32 @@ def validate_api_endpoint_availability(
         allowed_method.upper()
         for allowed_method in allowed_methods
     ]
-    has_body = method in {"POST", "PUT", "PATCH"}
+    # API VALIDATION CHANGE: Server-side HTTP method behavior rules for
+    # GET, POST, PUT, PATCH, and DELETE.
+    default_body_required_methods = {"POST", "PUT", "PATCH"}
+    if body_required_methods is None:
+        body_required_methods = default_body_required_methods
+
+    body_required_methods = {
+        method_name.upper()
+        for method_name in body_required_methods
+    }
+
+    default_body_forbidden_methods = {"GET", "DELETE"}
+    if body_forbidden_methods is None:
+        body_forbidden_methods = default_body_forbidden_methods
+
+    body_forbidden_methods = {
+        method_name.upper()
+        for method_name in body_forbidden_methods
+    }
+    content_length = request.META.get("CONTENT_LENGTH")
+    has_request_body = bool(
+        content_length and
+        content_length != "0"
+    )
+    method_requires_body = method in body_required_methods
+    method_allows_body = method not in body_forbidden_methods
     requires_auth_header = requires_auth and method != "OPTIONS"
     session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
     request_user = getattr(request, "user", None)
@@ -54,6 +81,16 @@ def validate_api_endpoint_availability(
             "path": request.path,
             "method": method,
             "allowed_methods": allowed_methods,
+            "supported_behavior_methods": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+            ],
+            "method_requires_body": method_requires_body,
+            "has_request_body": has_request_body,
+            "method_allows_body": method_allows_body,
             "content_type": getattr(request, "content_type", None),
             "requires_auth": requires_auth_header,
             "has_auth_header": bool(
@@ -68,7 +105,7 @@ def validate_api_endpoint_availability(
             "has_resolver_match": bool(
                 getattr(request, "resolver_match", None)
             ),
-            "requires_body_header": has_body,
+            "requires_body_header": method_requires_body,
             "allowed_content_types": allowed_content_types or [
                 "application/json",
                 "multipart/form-data",

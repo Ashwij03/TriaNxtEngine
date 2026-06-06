@@ -15,6 +15,16 @@ class EndpointAvailabilitySerializer(serializers.Serializer):
         child=serializers.CharField(),
         allow_empty=False,
     )
+    # API VALIDATION CHANGE: Method behavior fields validate GET, POST, PUT,
+    # PATCH, and DELETE request behavior from the server side.
+    supported_behavior_methods = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_empty=True,
+    )
+    method_requires_body = serializers.BooleanField(default=False)
+    has_request_body = serializers.BooleanField(default=False)
+    method_allows_body = serializers.BooleanField(default=True)
     content_type = serializers.CharField(
         required=False,
         allow_blank=True,
@@ -39,6 +49,21 @@ class EndpointAvailabilitySerializer(serializers.Serializer):
             allowed_method.upper()
             for allowed_method in data["allowed_methods"]
         ]
+        supported_behavior_methods = [
+            supported_method.upper()
+            for supported_method in data.get(
+                "supported_behavior_methods",
+                ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            )
+        ]
+
+        # API VALIDATION CHANGE: Block HTTP verbs outside the documented API
+        # behavior set while still allowing infrastructure OPTIONS handling.
+        if method not in supported_behavior_methods and method != "OPTIONS":
+            errors["method_behavior"] = (
+                f"{method} behavior is not supported. Supported API "
+                "methods: GET, POST, PUT, PATCH, DELETE."
+            )
 
         if method not in allowed_methods:
             errors["method"] = (
@@ -57,6 +82,18 @@ class EndpointAvailabilitySerializer(serializers.Serializer):
             errors["headers"] = (
                 "Authorization header or active session cookie is required "
                 "for this endpoint."
+            )
+
+        # API VALIDATION CHANGE: Validate request body behavior by method.
+        # POST/PUT/PATCH endpoints that expect input must receive a body, while
+        # GET and DELETE endpoints should use URL/query parameters instead.
+        if data["method_requires_body"] and not data["has_request_body"]:
+            errors["body"] = f"{method} request body is required for this endpoint."
+
+        if not data["method_allows_body"] and data["has_request_body"]:
+            errors["body"] = (
+                f"{method} should not include a request body. Use URL or query "
+                "parameters for this endpoint."
             )
 
         content_type = (data.get("content_type") or "").lower()
