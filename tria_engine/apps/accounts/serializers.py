@@ -161,6 +161,98 @@ class RequestSchemaValidationMixin:
         return data
 
 
+class AnyValueField(serializers.Field):
+    def to_internal_value(self, data):
+        return data
+
+    def to_representation(self, value):
+        return value
+
+
+# API VALIDATION CHANGE: Serializer for validating API response schema
+# structure, expected fields, and response data types.
+class ResponseSchemaValidationSerializer(serializers.Serializer):
+    response_data = AnyValueField(required=True)
+    expected_schema = serializers.DictField(required=False)
+
+    def _type_matches(self, value, expected_type):
+        if expected_type == "any":
+            return True
+        if expected_type == "null":
+            return value is None
+        if expected_type == "str":
+            return isinstance(value, str)
+        if expected_type == "int":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected_type == "float":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if expected_type == "bool":
+            return isinstance(value, bool)
+        if expected_type == "dict":
+            return isinstance(value, dict)
+        if expected_type == "list":
+            return isinstance(value, list)
+        return False
+
+    def _validate_schema(self, value, schema, path="response"):
+        errors = {}
+        expected_type = schema.get("type", "any")
+
+        if not self._type_matches(value, expected_type):
+            errors[path] = (
+                f"Expected {expected_type}, received "
+                f"{type(value).__name__}."
+            )
+            return errors
+
+        if expected_type == "dict":
+            fields = schema.get("fields", {})
+            required_fields = schema.get("required_fields", [])
+
+            for field_name in required_fields:
+                if field_name not in value:
+                    errors[f"{path}.{field_name}"] = "Missing response field."
+
+            for field_name, field_schema in fields.items():
+                if field_name in value:
+                    errors.update(
+                        self._validate_schema(
+                            value[field_name],
+                            field_schema,
+                            f"{path}.{field_name}",
+                        )
+                    )
+
+        if expected_type == "list":
+            item_schema = schema.get("item_schema")
+            if item_schema:
+                for index, item in enumerate(value):
+                    errors.update(
+                        self._validate_schema(
+                            item,
+                            item_schema,
+                            f"{path}[{index}]",
+                        )
+                    )
+
+        return errors
+
+    def validate(self, data):
+        expected_schema = data.get("expected_schema")
+        if not expected_schema:
+            return data
+
+        errors = self._validate_schema(
+            data["response_data"],
+            expected_schema,
+        )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return data
+
+
 class UserListSerializer(serializers.ModelSerializer):
     class Meta:
         model = User

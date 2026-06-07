@@ -140,6 +140,67 @@ def validate_api_request_schema(serializer):
     }, 400
 
 
+# API VALIDATION CHANGE: Shared response-schema validation for correct response
+# structure, fields, and data types before sending API responses.
+def validate_api_response_schema(response_data, expected_schema=None):
+    from .serializers import ResponseSchemaValidationSerializer
+
+    def infer_type(value):
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        if isinstance(value, str):
+            return "str"
+        if isinstance(value, dict):
+            return "dict"
+        if isinstance(value, list):
+            return "list"
+        return type(value).__name__
+
+    def infer_schema(value):
+        value_type = infer_type(value)
+        schema = {"type": value_type}
+
+        if isinstance(value, dict):
+            schema["required_fields"] = list(value.keys())
+            schema["fields"] = {
+                key: infer_schema(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, list):
+            schema["item_schema"] = (
+                infer_schema(value[0])
+                if value
+                else {"type": "any"}
+            )
+
+        return schema
+
+    observed_schema = infer_schema(response_data)
+    serializer = ResponseSchemaValidationSerializer(
+        data={
+            "response_data": response_data,
+            "expected_schema": expected_schema or {},
+        }
+    )
+
+    if serializer.is_valid():
+        return None, observed_schema
+
+    return {
+        "message": "Response schema validation failed",
+        "response_schema": expected_schema,
+        "observed_schema": observed_schema,
+        "errors": serializer.errors,
+    }, observed_schema
+
+
 def _security_setting(name, default):
     security = getattr(settings, "TRIA_SECURITY", {})
     return security.get(name, default)

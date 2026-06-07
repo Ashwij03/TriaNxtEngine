@@ -23,7 +23,7 @@ from .serializers import (
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema
 )
 from .models import User, UploadedDocument
 from .audit import log_audit_event
@@ -43,6 +43,9 @@ class APIView(DRFAPIView):
     # POST/PUT/PATCH require a body; GET/DELETE should normally not send one.
     body_required_methods = {"POST", "PUT", "PATCH"}
     body_forbidden_methods = {"GET", "DELETE"}
+    # API VALIDATION CHANGE: Views can declare success response_schema to check
+    # outgoing structure, fields, and data types before the response is sent.
+    response_schema = None
 
     def initial(self, request, *args, **kwargs):
         allowed_content_types = [
@@ -90,9 +93,48 @@ class APIView(DRFAPIView):
 
         return super().initial(request, *args, **kwargs)
 
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(
+            request,
+            response,
+            *args,
+            **kwargs,
+        )
+
+        if (
+            isinstance(response, Response) and
+            response.status_code < 400 and
+            response.data is not None
+        ):
+            schema_error, observed_schema = validate_api_response_schema(
+                response.data,
+                self.response_schema,
+            )
+            response["X-Response-Schema-Validated"] = (
+                "true" if not schema_error else "false"
+            )
+
+            if schema_error:
+                response.data = schema_error
+                response.status_code = 500
+                return response
+
+            response["X-Response-Schema-Type"] = observed_schema["type"]
+
+        return response
+
 
 class RegisterAPI(APIView):
     permission_classes = [AllowAny]
+    # API VALIDATION CHANGE: Expected successful registration response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "user_id"],
+        "fields": {
+            "message": {"type": "str"},
+            "user_id": {"type": "int"},
+        },
+    }
 
     @swagger_auto_schema(request_body=RegisterSerializer)
     def post(self, request):
@@ -138,6 +180,33 @@ class UserListAPI(APIView):
 
 class LoginAPI(APIView):
     permission_classes = [AllowAny]
+    # API VALIDATION CHANGE: Expected successful login response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "user"],
+        "fields": {
+            "message": {"type": "str"},
+            "user": {
+                "type": "dict",
+                "required_fields": [
+                    "id",
+                    "email",
+                    "username",
+                    "first_name",
+                    "last_name",
+                    "is_active",
+                ],
+                "fields": {
+                    "id": {"type": "int"},
+                    "email": {"type": "str"},
+                    "username": {"type": "str"},
+                    "first_name": {"type": "str"},
+                    "last_name": {"type": "str"},
+                    "is_active": {"type": "bool"},
+                },
+            },
+        },
+    }
 
     @swagger_auto_schema(request_body=LoginSerializer)
     def post(self, request):
@@ -342,6 +411,15 @@ class LoginMFAAPI(APIView):
 
 class VerifyLoginOTPAPI(APIView):
     permission_classes = [AllowAny]
+    # API VALIDATION CHANGE: Expected successful MFA verification response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "user_id"],
+        "fields": {
+            "message": {"type": "str"},
+            "user_id": {"type": "int"},
+        },
+    }
 
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
@@ -445,6 +523,14 @@ class ForgotPasswordAPI(APIView):
 class ResetPasswordAPI(APIView):
 
     permission_classes = [AllowAny]
+    # API VALIDATION CHANGE: Expected successful reset-password response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message"],
+        "fields": {
+            "message": {"type": "str"},
+        },
+    }
 
     @swagger_auto_schema(
         request_body=ResetPasswordSerializer
@@ -665,6 +751,16 @@ class CompromisedTokenReportAPI(APIView):
 class IntegrityCheckAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected integrity-check response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "original_message", "sha256_hash"],
+        "fields": {
+            "message": {"type": "str"},
+            "original_message": {"type": "str"},
+            "sha256_hash": {"type": "str"},
+        },
+    }
 
     @swagger_auto_schema(
         request_body=IntegritySerializer
@@ -741,6 +837,39 @@ class DocumentListAPI(APIView):
 class DocumentUploadAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful document-upload response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "data"],
+        "fields": {
+            "message": {"type": "str"},
+            "data": {
+                "type": "dict",
+                "required_fields": [
+                    "document_number",
+                    "original_name",
+                    "content_type",
+                    "file_size",
+                    "category",
+                    "organization",
+                    "uploaded_by",
+                    "created_at",
+                    "updated_at",
+                ],
+                "fields": {
+                    "document_number": {"type": "int"},
+                    "original_name": {"type": "str"},
+                    "content_type": {"type": "any"},
+                    "file_size": {"type": "int"},
+                    "category": {"type": "str"},
+                    "organization": {"type": "any"},
+                    "uploaded_by": {"type": "str"},
+                    "created_at": {"type": "str"},
+                    "updated_at": {"type": "str"},
+                },
+            },
+        },
+    }
 
     parser_classes = [
         MultiPartParser,
@@ -981,6 +1110,15 @@ class DocumentDeleteAPI(APIView):
 
 class ProfilePhotoUploadAPI(APIView):
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful profile-photo response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "profile_photo"],
+        "fields": {
+            "message": {"type": "str"},
+            "profile_photo": {"type": "any"},
+        },
+    }
     parser_classes = [MultiPartParser, FormParser]
 
     @swagger_auto_schema(
@@ -1069,6 +1207,15 @@ class ProfilePhotoUploadAPI(APIView):
 
 class ProfilePhotoViewAPI(APIView):
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected profile-photo view response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["name", "url"],
+        "fields": {
+            "name": {"type": "str"},
+            "url": {"type": "str"},
+        },
+    }
 
     def get(self, request):
 
@@ -1132,6 +1279,16 @@ class ProfilePhotoDeleteAPI(APIView):
 class UploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful upload-form response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "form_id", "file"],
+        "fields": {
+            "message": {"type": "str"},
+            "form_id": {"type": "int"},
+            "file": {"type": "str"},
+        },
+    }
 
     parser_classes = [
         MultiPartParser,
@@ -1198,6 +1355,14 @@ class UploadFormAPI(APIView):
 class DeleteUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful delete-upload-form response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message"],
+        "fields": {
+            "message": {"type": "str"},
+        },
+    }
     # API VALIDATION CHANGE: This DELETE endpoint uses request.data because the
     # existing serializer validates user_id and form_id from the request body.
     body_required_methods = {"DELETE"}
@@ -1273,6 +1438,24 @@ class DeleteUploadFormAPI(APIView):
 class ViewUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected view-upload-form response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": [
+            "form_id",
+            "form_type",
+            "file_name",
+            "file_url",
+            "uploaded_at",
+        ],
+        "fields": {
+            "form_id": {"type": "int"},
+            "form_type": {"type": "str"},
+            "file_name": {"type": "str"},
+            "file_url": {"type": "str"},
+            "uploaded_at": {"type": "str"},
+        },
+    }
 
     @swagger_auto_schema(
         manual_parameters=[
