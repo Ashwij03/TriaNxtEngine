@@ -38,6 +38,8 @@ otp_expiry = {}
 # API VALIDATION CHANGE: All account APIs inherit this local APIView wrapper.
 # It validates endpoint availability for correct method and required headers
 # before the existing API logic runs.
+
+@method_decorator(csrf_exempt, name='dispatch')
 class APIView(DRFAPIView):
     # API VALIDATION CHANGE: Default HTTP method behavior for account APIs.
     # POST/PUT/PATCH require a body; GET/DELETE should normally not send one.
@@ -124,6 +126,7 @@ class APIView(DRFAPIView):
         return response
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class RegisterAPI(APIView):
     permission_classes = [AllowAny]
     # API VALIDATION CHANGE: Expected successful registration response schema.
@@ -136,26 +139,79 @@ class RegisterAPI(APIView):
         },
     }
 
-    @swagger_auto_schema(request_body=RegisterSerializer)
+    @swagger_auto_schema(request_body=RegisterSerializer, responses={
+        201: "User registered successfully",
+        400: "Validation Error",
+        409: "Email or Username already exists",
+        500: "Internal Server Error",
+    })
+
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        # API VALIDATION CHANGE: Return request-schema details on invalid input.
-        schema_error, status_code = validate_api_request_schema(serializer)
-        if schema_error:
-            return Response(schema_error, status=status_code)
+        try:
 
-        user = serializer.save()
-        create_audit_log(
-            user=user,
-            action="REGISTER",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{user.username} registered into system",
-            signature_meaning="User electronically signed registration"
-        )
-        log_audit_event("user_registered", user=user, request=request)
-        return Response({"message": "User registered", "user_id": user.id}, status=201)
+            serializer = RegisterSerializer(data=request.data)
+
+            # API VALIDATION CHANGE:
+            # Return request-schema details on invalid input.
+            schema_error, status_code = validate_api_request_schema(serializer)
+
+            if schema_error:
+
+                # API VALIDATION CHANGE:
+                # Return 409 Conflict when duplicate email or username exists.
+                errors = schema_error.get("errors", {})
+
+                if (
+                    "email" in errors or
+                    "username" in errors
+                ):
+                    return Response(
+                        schema_error,
+                        status=409
+                    )
+
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            user = serializer.save()
+
+            create_audit_log(
+                user=user,
+                action="REGISTER",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{user.username} registered into system",
+                signature_meaning="User electronically signed registration"
+            )
+
+            log_audit_event(
+                "user_registered",
+                user=user,
+                request=request
+            )
+
+            return Response(
+                {
+                    "message": "User registered",
+                    "user_id": user.id
+                },
+                status=201
+            )
+
+        except Exception as e:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected server-side errors.
+            return Response(
+                {
+                    "message": str(e)
+                },
+                status=500
+            )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class UserListAPI(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -178,6 +234,7 @@ class UserListAPI(APIView):
 
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class LoginAPI(APIView):
     permission_classes = [AllowAny]
     # API VALIDATION CHANGE: Expected successful login response schema.
@@ -260,6 +317,8 @@ class LoginAPI(APIView):
             status=200
         )
 
+
+@method_decorator(csrf_exempt, name='dispatch')
 class CheckSessionAPI(APIView):
 
     permission_classes = [AllowAny]
@@ -369,6 +428,7 @@ class CheckSessionAPI(APIView):
             )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class LoginMFAAPI(APIView):
     permission_classes = [AllowAny]
 
@@ -409,6 +469,7 @@ class LoginMFAAPI(APIView):
         return Response(result, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class VerifyLoginOTPAPI(APIView):
     permission_classes = [AllowAny]
     # API VALIDATION CHANGE: Expected successful MFA verification response schema.
@@ -459,6 +520,7 @@ class VerifyLoginOTPAPI(APIView):
         return Response({"message": "MFA login successful", "user_id": user.id}, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ForgotPasswordAPI(APIView):
 
     permission_classes = [AllowAny]
@@ -468,61 +530,79 @@ class ForgotPasswordAPI(APIView):
     )
     def post(self, request):
 
-        serializer = ForgotPasswordSerializer(
-            data=request.data
-        )
+        try:
 
-        # API VALIDATION CHANGE: Validate forgot-password request schema.
-        schema_error, status_code = validate_api_request_schema(serializer)
-        if schema_error:
-
-            return Response(
-                schema_error,
-                status=status_code
+            serializer = ForgotPasswordSerializer(
+                data=request.data
             )
 
-        result, error = forgot_password_user(
-            email=serializer.validated_data["email"],
-            request=request,
-        )
+            # API VALIDATION CHANGE: Validate forgot-password request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        if error:
+            if schema_error:
+
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            result, error = forgot_password_user(
+                email=serializer.validated_data["email"],
+                request=request,
+            )
+
+            if error:
+
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=404
+                )
+
+            user = User.objects.filter(
+                email=serializer.validated_data["email"]
+            ).first()
+
+            if user:
+
+                create_audit_log(
+                    user=user,
+                    action="FORGOT_PASSWORD",
+                    ip_address=request.META.get("REMOTE_ADDR"),
+                    description=(
+                        f"{user.username} requested forgot password"
+                    ),
+                    signature_meaning=(
+                        "User electronically signed forgot password request"
+                    )
+                )
 
             return Response(
                 {
-                    "message": error
+                    "message": "Password reset instructions sent successfully",
+                    "data": result,
                 },
-                status=404
+                status=200
             )
 
-        user = User.objects.filter(email=serializer.validated_data["email"]).first()
+        except Exception:
 
-        if user:
-
-            create_audit_log(
-                user=user,
-                action="FORGOT_PASSWORD",
-                ip_address=request.META.get("REMOTE_ADDR"),
-                description=(
-                    f"{user.username} requested forgot password"
-                ),
-                signature_meaning=(
-                    "User electronically signed forgot password request"
-                )
+            # API VALIDATION CHANGE:
+            # Handle unexpected forgot-password errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
             )
 
-        return Response(
-            {
-                "message": "Password reset instructions sent successfully",
-                "data": result,
-            },
-            status=200
-        )
 
-
+@method_decorator(csrf_exempt, name='dispatch')
 class ResetPasswordAPI(APIView):
 
     permission_classes = [AllowAny]
+
     # API VALIDATION CHANGE: Expected successful reset-password response schema.
     response_schema = {
         "type": "dict",
@@ -537,55 +617,70 @@ class ResetPasswordAPI(APIView):
     )
     def post(self, request):
 
-        serializer = ResetPasswordSerializer(
-            data=request.data
-        )
+        try:
 
-        # API VALIDATION CHANGE: Validate reset-password request schema.
-        schema_error, status_code = validate_api_request_schema(serializer)
-        if schema_error:
-
-            return Response(
-                schema_error,
-                status=status_code
+            serializer = ResetPasswordSerializer(
+                data=request.data
             )
 
-        user, error = reset_password_user(
-            email=serializer.validated_data["email"],
-            otp_code=serializer.validated_data["otp_code"],
-            new_password=serializer.validated_data["new_password"],
-            request=request,
-        )
+            # API VALIDATION CHANGE: Validate reset-password request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        if error:
+            if schema_error:
+
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            user, error = reset_password_user(
+                email=serializer.validated_data["email"],
+                otp_code=serializer.validated_data["otp_code"],
+                new_password=serializer.validated_data["new_password"],
+                request=request,
+            )
+
+            if error:
+
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+
+            if user:
+
+                create_audit_log(
+                    user=user,
+                    action="RESET_PASSWORD",
+                    ip_address=request.META.get("REMOTE_ADDR"),
+                    description="User password reset successfully",
+                    signature_meaning=(
+                        "User electronically signed for password reset"
+                    )
+                )
 
             return Response(
                 {
-                    "message": error
+                    "message": "Password reset successful"
                 },
-                status=400
+                status=200
             )
 
-        if user:
+        except Exception:
 
-            create_audit_log(
-                user=user,
-                action="RESET_PASSWORD",
-                ip_address=request.META.get("REMOTE_ADDR"),
-                description="User password reset successfully",
-                signature_meaning=(
-                    "User electronically signed for password reset"
-                )
+            # API VALIDATION CHANGE:
+            # Handle unexpected password reset errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
             )
 
-        return Response(
-            {
-                "message": "Password reset successful"
-            },
-            status=200
-        )
 
-
+@method_decorator(csrf_exempt, name='dispatch')
 class ChangePasswordAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -706,6 +801,7 @@ class ChangePasswordAPI(APIView):
             )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class CompromisedTokenReportAPI(APIView):
     permission_classes = [IsAuthenticated]
     # API VALIDATION CHANGE: This POST endpoint receives token_type in the query
@@ -748,9 +844,11 @@ class CompromisedTokenReportAPI(APIView):
         return Response(result, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class IntegrityCheckAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+
     # API VALIDATION CHANGE: Expected integrity-check response schema.
     response_schema = {
         "type": "dict",
@@ -767,44 +865,60 @@ class IntegrityCheckAPI(APIView):
     )
     def post(self, request):
 
-        serializer = IntegritySerializer(
-            data=request.data
-        )
+        try:
 
-        # API VALIDATION CHANGE: Validate integrity-check request schema.
-        schema_error, status_code = validate_api_request_schema(serializer)
-        if schema_error:
-
-            return Response(
-                schema_error,
-                status=status_code
+            serializer = IntegritySerializer(
+                data=request.data
             )
 
-        response = integrity_check_service(
-            serializer.validated_data[
-                "message"
-            ]
-        )
+            # API VALIDATION CHANGE: Validate integrity-check request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        log_audit_event(
-            "integrity_check_completed",
-            user=request.user,
-            request=request,
-            status="success",
-        )
+            if schema_error:
 
-        create_audit_log(
-            user=request.user,
-            action="INTEGRITY_CHECK",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} performed integrity check",
-            signature_meaning="Integrity verification electronically signed"
-        )
-        
-        return Response(
-            response,
-            status=200
-        )
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            response = integrity_check_service(
+                serializer.validated_data[
+                    "message"
+                ]
+            )
+
+            log_audit_event(
+                "integrity_check_completed",
+                user=request.user,
+                request=request,
+                status="success",
+            )
+
+            create_audit_log(
+                user=request.user,
+                action="INTEGRITY_CHECK",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} performed integrity check",
+                signature_meaning="Integrity verification electronically signed"
+            )
+
+            return Response(
+                response,
+                status=200
+            )
+
+        except Exception:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected integrity-check errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
+            
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentListAPI(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -834,6 +948,7 @@ class DocumentListAPI(APIView):
         return Response(UploadedDocumentSerializer(documents, many=True).data, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentUploadAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -915,83 +1030,93 @@ class DocumentUploadAPI(APIView):
             ),
         ],
         responses={
-            201: UploadedDocumentSerializer
+            201: UploadedDocumentSerializer,
+            400: "Validation Error",
+            401: "Unauthorized",
+            500: "Internal Server Error",
         },
     )
+    
     def post(self, request):
 
-        serializer = DocumentUploadSerializer(
-            data=request.data
-        )
+        try:
 
-        # API VALIDATION CHANGE: Validate document-upload request schema.
-        schema_error, status_code = validate_api_request_schema(serializer)
-        if schema_error:
-
-            return Response(
-                schema_error,
-                status=status_code
+            serializer = DocumentUploadSerializer(
+                data=request.data
             )
 
-        user_id = serializer.validated_data[
-            "user_id"
-        ]
-        
+            # API VALIDATION CHANGE: Validate document-upload request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        uploaded_file = serializer.validated_data[
-            "file"
-        ]
+            if schema_error:
 
-        category = serializer.validated_data.get(
-            "category",
-            "general"
-        )
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
 
-        document, error = upload_document(
-            user_id=user_id,
-            uploaded_file=uploaded_file,
-            uploaded_by=request.user,
-            category=category,
-            organization=request.user.organization,
-            request=request,
-        )
+            user_id = serializer.validated_data[
+                "user_id"
+            ]
 
-        if error:
+            uploaded_file = serializer.validated_data[
+                "file"
+            ]
+
+            category = serializer.validated_data.get(
+                "category",
+                "general"
+            )
+
+            document, error = upload_document(
+                user_id=user_id,
+                uploaded_file=uploaded_file,
+                uploaded_by=request.user,
+                category=category,
+                organization=request.user.organization,
+                request=request,
+            )
+
+            if error:
+
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+
+            create_audit_log(
+                user=request.user,
+                action="UPLOAD_DOCUMENT",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} uploaded document {document.document_number}",
+                signature_meaning="Document upload electronically signed"
+            )
 
             return Response(
                 {
-                    "message": error
-                },
-                status=400
-            )
-        
-        create_audit_log(
-            user=request.user,
-            action="UPLOAD_DOCUMENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} uploaded document {document.document_number}",
-            signature_meaning="Document upload electronically signed"
-        )
-
-        return Response(
-            {
-                "message": (
-                    "Document uploaded "
-                    "successfully"
-                ),
-                "data": (
-                    UploadedDocumentSerializer(
+                    "message": "Document uploaded successfully",
+                    "data": UploadedDocumentSerializer(
                         document
-                    ).data
-                ),
-            },
-            status=201,
-        )
-# class for document download and deletion based on document number with proper permissions and audit logging
+                    ).data,
+                },
+                status=201,
+            )
 
+        except Exception as e:
+
+            return Response(
+                {
+                    "message": str(e)
+                },
+                status=500
+            )
+            
+
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentDownloadAPI(APIView):
     permission_classes = [IsAuthenticated]
-
     @swagger_auto_schema(
         manual_parameters=[
             openapi.Parameter(
@@ -1007,7 +1132,6 @@ class DocumentDownloadAPI(APIView):
         document_number = request.query_params.get("document_number")
         if not document_number:
             return Response({"message": "document_number is required"}, status=400)
-
         document, error = get_document_by_number(
             document_number=document_number,
             user=request.user,
@@ -1015,7 +1139,6 @@ class DocumentDownloadAPI(APIView):
         )
         if error:
             return Response({"message": error}, status=404)
-
         return FileResponse(
             document.file.open("rb"),
             as_attachment=True,
@@ -1023,6 +1146,7 @@ class DocumentDownloadAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentDeleteAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -1108,6 +1232,7 @@ class DocumentDeleteAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ProfilePhotoUploadAPI(APIView):
     permission_classes = [IsAuthenticated]
     # API VALIDATION CHANGE: Expected successful profile-photo response schema.
@@ -1150,61 +1275,76 @@ class ProfilePhotoUploadAPI(APIView):
     )
     def post(self, request):
 
-        serializer = ProfilePhotoUploadSerializer(
-            data=request.data
-        )
+        try:
 
-        # API VALIDATION CHANGE: Validate profile-photo request schema.
-        schema_error, status_code = validate_api_request_schema(serializer)
-        if schema_error:
-
-            return Response(
-                schema_error,
-                status=status_code
+            serializer = ProfilePhotoUploadSerializer(
+                data=request.data
             )
 
-        uploaded_file = serializer.validated_data[
-            "photo"
-        ]
+            # API VALIDATION CHANGE: Validate profile-photo request schema.
+            schema_error, status_code = validate_api_request_schema (serializer)
 
-        user, error = upload_profile_photo(
-            user=request.user,
-            uploaded_file=uploaded_file,
-            request=request,
-        )
+            if schema_error:
 
-        if error:
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            uploaded_file = serializer.validated_data[
+                "photo"
+            ]
+
+            user, error = upload_profile_photo(
+                user=request.user,
+                uploaded_file=uploaded_file,
+                request=request,
+            )
+
+            if error:
+
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+
+            create_audit_log(
+                user=request.user,
+                action="PROFILE_PHOTO_UPLOAD",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} uploaded profile  photo",
+                signature_meaning="Profile photo upload electronically  signed"
+            )
 
             return Response(
                 {
-                    "message": error
+                    "message": (
+                        "Profile photo uploaded successfully"
+                    ),
+                    "profile_photo": (
+                        user.profile_photo.url
+                        if user.profile_photo
+                        else None
+                    ),
                 },
-                status=400
+                status=200,
             )
-        
-        create_audit_log(
-            user=request.user,
-            action="PROFILE_PHOTO_UPLOAD",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} uploaded profile photo",
-            signature_meaning="Profile photo upload electronically signed"
-        )
 
-        return Response(
-            {
-                "message": (
-                    "Profile photo uploaded successfully"
-                ),
-                "profile_photo": (
-                    user.profile_photo.url
-                    if user.profile_photo
-                    else None
-                ),
-            },
-            status=200,
-        )
+        except Exception:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected profile-photo upload errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ProfilePhotoViewAPI(APIView):
     permission_classes = [IsAuthenticated]
     # API VALIDATION CHANGE: Expected profile-photo view response schema.
@@ -1254,6 +1394,7 @@ class ProfilePhotoViewAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ProfilePhotoDeleteAPI(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1276,6 +1417,74 @@ class ProfilePhotoDeleteAPI(APIView):
         return Response(result, status=200)
 
 
+    def post(self, request):
+    
+        try:
+        
+            serializer = UploadFormSerializer(
+                data=request.data
+            )
+    
+            # API VALIDATION CHANGE: Validate upload-form request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
+    
+            if schema_error:
+            
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+    
+            user_id = serializer.validated_data[
+                "user_id"
+            ]
+    
+            form_type = serializer.validated_data[
+                "form_type"
+            ]
+    
+            uploaded_file = serializer.validated_data[
+                "file"
+            ]
+    
+            form = upload_form_service(
+                user_id,
+                request.user,
+                uploaded_file,
+                form_type
+            )
+    
+            create_audit_log(
+                user=request.user,
+                action="UPLOAD_FORM",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} uploaded {form_type} form",
+                signature_meaning="Form upload electronically signed"
+            )
+    
+            return Response(
+                {
+                    "message": (
+                        f"{form_type} uploaded successfully"
+                    ),
+                    "form_id": form.id,
+                    "file": form.file.url,
+                },
+                status=201
+            )
+
+        except Exception:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected upload-form errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
+
+@method_decorator(csrf_exempt, name='dispatch')
 class UploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -1300,58 +1509,72 @@ class UploadFormAPI(APIView):
     )
     def post(self, request):
 
-        serializer = UploadFormSerializer(
-            data=request.data
-        )
+        try:
 
-        # API VALIDATION CHANGE: Validate upload-form request schema.
-        schema_error, status_code = validate_api_request_schema(serializer)
-        if schema_error:
-
-            return Response(
-                schema_error,
-                status=status_code
+            serializer = UploadFormSerializer(
+                data=request.data
             )
 
-        user_id = serializer.validated_data[
-            "user_id"
-        ]
+            # API VALIDATION CHANGE: Validate upload-form request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        form_type = serializer.validated_data[
-            "form_type"
-        ]
+            if schema_error:
 
-        uploaded_file = serializer.validated_data[
-            "file"
-        ]
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
 
-        form = upload_form_service(
-            user_id,
-            request.user,
-            uploaded_file,
-            form_type
-        )
-        
-        create_audit_log(
-            user=request.user,
-            action="UPLOAD_FORM",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} uploaded {form_type} form",
-            signature_meaning="Form upload electronically signed"
-        )
+            user_id = serializer.validated_data[
+                "user_id"
+            ]
 
-        return Response(
-            {
-                "message": (
-                    f"{form_type} uploaded successfully"
-                ),
-                "form_id": form.id,
-                "file": form.file.url,
-            },
-            status=201
-        )
+            form_type = serializer.validated_data[
+                "form_type"
+            ]
 
+            uploaded_file = serializer.validated_data[
+                "file"
+            ]
 
+            form = upload_form_service(
+                user_id,
+                request.user,
+                uploaded_file,
+                form_type
+            )
+
+            create_audit_log(
+                user=request.user,
+                action="UPLOAD_FORM",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} uploaded {form_type} form",
+                signature_meaning="Form upload electronically signed"
+            )
+
+            return Response(
+                {
+                    "message": (
+                        f"{form_type} uploaded successfully"
+                    ),
+                    "form_id": form.id,
+                    "file": form.file.url,
+                },
+                status=201
+            )
+
+        except Exception:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected upload-form errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
+
+@method_decorator(csrf_exempt, name='dispatch')
 class DeleteUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -1435,6 +1658,7 @@ class DeleteUploadFormAPI(APIView):
             status=200
         )
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ViewUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -1526,6 +1750,7 @@ class ViewUploadFormAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class AuditLogsAPI(APIView):
 
     permission_classes = [IsAuthenticated]

@@ -3,7 +3,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
 
-ALLOWED_FILE_TYPES = ['pdf', 'docx']
+ALLOWED_FILE_TYPES = ['pdf', 'docx', 'txt']
 MAX_FILE_SIZE_MB = 10
 
 ALLOWED_IMAGE_TYPES = ['jpg', 'jpeg', 'png']

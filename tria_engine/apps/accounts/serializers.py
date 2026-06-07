@@ -282,9 +282,14 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
             "password": {"write_only": True}
         }
 
+    # API VALIDATION CHANGE:
+    # Duplicate email detected.
+    # API should return HTTP 409 Conflict.
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
-            raise serializers.ValidationError("A user with this email already exists.")
+            raise serializers.ValidationError(
+                "A user with this email already exists."
+            )
         return value
 
     def validate_username(self, value):
@@ -497,7 +502,7 @@ class ProfilePhotoUploadSerializer(RequestSchemaValidationMixin, serializers.Ser
 
         if ext not in allowed_extensions:
             raise serializers.ValidationError(
-                "Only PNG, JPG, and JPEG image files are allowed. PDF and DOC files are not supported."
+                "Only PNG, JPG, and JPEG image files are allowed. PDF, DOC and TXT files are not supported."
             )
 
         return value
