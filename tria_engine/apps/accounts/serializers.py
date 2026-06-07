@@ -122,34 +122,52 @@ class EndpointAvailabilitySerializer(serializers.Serializer):
         return data
 
 
+# API VALIDATION CHANGE: Shared request-schema helper for required fields,
+# optional fields, and DRF data types used in validation error responses.
+class RequestSchemaValidationMixin:
+    def get_request_schema(self):
+        required_fields = []
+        optional_fields = []
+        data_types = {}
+
+        for field_name, field in self.fields.items():
+            if field.read_only:
+                continue
+
+            data_types[field_name] = field.__class__.__name__
+
+            if field.required and field.default is serializers.empty:
+                required_fields.append(field_name)
+            else:
+                optional_fields.append(field_name)
+
+        return {
+            "required_fields": required_fields,
+            "optional_fields": optional_fields,
+            "data_types": data_types,
+        }
+
+    def validate_request_schema(self, data):
+        errors = {}
+
+        for field_name in self.get_request_schema()["required_fields"]:
+            value = data.get(field_name)
+            if value in [None, ""]:
+                errors[field_name] = f"{field_name} is required"
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return data
+
+
 class UserListSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["username", "email", "first_name", "last_name", "organization", "role"]
 
 
-class RegisterSerializer(serializers.ModelSerializer):
-    def validate(self, data):
-
-        required_fields = [
-            "username",
-            "email",
-            "password",
-            "confirm_password"
-        ]
-
-        for field in required_fields:
-            if not data.get(field):
-                raise serializers.ValidationError(
-                    {field: f"{field} is required"}
-                )
-
-        if data["password"] != data["confirm_password"]:
-            raise serializers.ValidationError(
-                "Passwords do not match"
-            )
-
-        return data
+class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializer):
     confirm_password = serializers.CharField(write_only=True)
 
     class Meta:
@@ -183,6 +201,9 @@ class RegisterSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
+        # API VALIDATION CHANGE: Validate request schema before business rules.
+        self.validate_request_schema(data)
+
         if data["password"] != data["confirm_password"]:
             raise serializers.ValidationError("Passwords do not match")
 
@@ -204,7 +225,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return create_user(validated_data)
     
 
-class LoginSerializer(serializers.Serializer):
+class LoginSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(write_only=True)
     
@@ -214,30 +235,22 @@ class LoginSerializer(serializers.Serializer):
     #     return data
     
     
-class LoginMFASerializer(serializers.Serializer):
+class LoginMFASerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(write_only=True)
     def validate(self, data):
-
-        if not data.get("email"):
-            raise serializers.ValidationError(
-                {"email": "Email is required"}
-            )
-
-        if not data.get("password"):
-            raise serializers.ValidationError(
-                {"password": "Password is required"}
-            )
-
+        # API VALIDATION CHANGE: Validate required fields and data types through
+        # the shared request-schema helper.
+        self.validate_request_schema(data)
         return data
 
 
-class VerifyLoginOTPSerializer(serializers.Serializer):
+class VerifyLoginOTPSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
     otp_code = serializers.CharField(max_length=6, required=True)
 
 
-class ForgotPasswordSerializer(serializers.Serializer):
+class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField()
 
 # FIX: Replaced `user_id` (IntegerField) with `email` (EmailField). The `ResetPasswordAPI`
@@ -245,26 +258,17 @@ class ForgotPasswordSerializer(serializers.Serializer):
 # `reset_password_user()`, which looks up the token via the user's email. This removes
 # the need for the caller to track an internal user_id and makes the API consistent
 # with every other password-related endpoint that identifies users by email.
-class ResetPasswordSerializer(serializers.Serializer):
+class ResetPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
     otp_code = serializers.CharField(max_length=6, required=True)
     new_password = serializers.CharField(write_only=True)
     def validate(self, data):
-
-        if not data.get("email"):
-            raise serializers.ValidationError(
-                {"email": "Email is required"}
-            )
-
-        if not data.get("password"):
-            raise serializers.ValidationError(
-                {"password": "Password is required"}
-            )
-
+        # API VALIDATION CHANGE: Validate actual reset-password schema fields.
+        self.validate_request_schema(data)
         return data
 
 
-class ChangePasswordSerializer(serializers.Serializer):
+class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
     # username = serializers.CharField(required=False)
     current_password = serializers.CharField(write_only=True, required=True)
@@ -272,19 +276,8 @@ class ChangePasswordSerializer(serializers.Serializer):
     confirm_password = serializers.CharField(write_only=True, required=True)
 
     def validate(self, data):
-
-        required_fields = [
-            "email",
-            "current_password",
-            "new_password",
-            "confirm_password"
-        ]
-
-        for field in required_fields:
-            if not data.get(field):
-                raise serializers.ValidationError(
-                    {field: f"{field} is required"}
-                )
+        # API VALIDATION CHANGE: Validate request schema before password rules.
+        self.validate_request_schema(data)
 
         if data["new_password"] != data["confirm_password"]:
             raise serializers.ValidationError(
@@ -298,22 +291,11 @@ class ChangePasswordSerializer(serializers.Serializer):
 
         return data
 
-class DocumentUploadSerializer(serializers.Serializer):
+class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     
     def validate(self, data):
-
-        required_fields = [
-            "user_id",
-            "uploaded_by",
-            "file"
-        ]
-
-        for field in required_fields:
-            if not data.get(field):
-                raise serializers.ValidationError(
-                    {field: f"{field} is required"}
-                )
-
+        # API VALIDATION CHANGE: Validate required upload fields and data types.
+        self.validate_request_schema(data)
         return data
 
     user_id = serializers.IntegerField()
@@ -356,7 +338,7 @@ class UploadedDocumentSerializer(serializers.ModelSerializer):
         return None
 
 
-class UploadFormSerializer(serializers.ModelSerializer):
+class UploadFormSerializer(RequestSchemaValidationMixin, serializers.ModelSerializer):
 
     user_id = serializers.IntegerField(
         required=True
@@ -373,23 +355,13 @@ class UploadFormSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, data):
-
-        required_fields = [
-            "user_id",
-            "uploaded_by",
-            "file"
-        ]
-    
-        for field in required_fields:
-            if not data.get(field):
-                raise serializers.ValidationError(
-                    {field: f"{field} is required"}
-                )
-    
+        # API VALIDATION CHANGE: Validate only fields declared by UploadFormSerializer.
+        self.validate_request_schema(data)
         return data
 
 
 class DeleteUploadFormSerializer(
+    RequestSchemaValidationMixin,
     serializers.Serializer
 ):
 
@@ -403,6 +375,7 @@ class DeleteUploadFormSerializer(
 
 
 class ViewUploadFormSerializer(
+    RequestSchemaValidationMixin,
     serializers.Serializer
 ):
 
@@ -411,32 +384,22 @@ class ViewUploadFormSerializer(
     )
 
 
-class IntegritySerializer(serializers.Serializer):
+class IntegritySerializer(RequestSchemaValidationMixin, serializers.Serializer):
     message = serializers.CharField()
 
 
-class ProfilePhotoUploadSerializer(serializers.Serializer):
+class ProfilePhotoUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     photo = serializers.FileField()
     email = serializers.EmailField(required=True)
     user_id = serializers.IntegerField()
 
-    def validate_photo(self, data, value):
-        import os
-
-        required_fields = [
-            "photo",
-            "email",
-            "user_id"
-        ]
-
-        for field in required_fields:
-            if not data.get(field):
-                raise serializers.ValidationError(
-                    {field: f"{field} is required"}
-                )
-
+    def validate(self, data):
+        # API VALIDATION CHANGE: Validate profile-photo request schema.
+        self.validate_request_schema(data)
         return data
 
+    def validate_photo(self, value):
+        import os
         ext = os.path.splitext(value.name)[1].lower()
         allowed_extensions = [".png", ".jpg", ".jpeg"]
 

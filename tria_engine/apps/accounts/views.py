@@ -23,7 +23,7 @@ from .serializers import (
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema
 )
 from .models import User, UploadedDocument
 from .audit import log_audit_event
@@ -97,18 +97,21 @@ class RegisterAPI(APIView):
     @swagger_auto_schema(request_body=RegisterSerializer)
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            create_audit_log(
-                user=user,
-                action="REGISTER",
-                ip_address=request.META.get('REMOTE_ADDR'),
-                description=f"{user.username} registered into system",
-                signature_meaning="User electronically signed registration"
-            )
-            log_audit_event("user_registered", user=user, request=request)
-            return Response({"message": "User registered", "user_id": user.id}, status=201)
-        return Response(serializer.errors, status=400)
+        # API VALIDATION CHANGE: Return request-schema details on invalid input.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
+            return Response(schema_error, status=status_code)
+
+        user = serializer.save()
+        create_audit_log(
+            user=user,
+            action="REGISTER",
+            ip_address=request.META.get('REMOTE_ADDR'),
+            description=f"{user.username} registered into system",
+            signature_meaning="User electronically signed registration"
+        )
+        log_audit_event("user_registered", user=user, request=request)
+        return Response({"message": "User registered", "user_id": user.id}, status=201)
 
 
 class UserListAPI(APIView):
@@ -139,8 +142,11 @@ class LoginAPI(APIView):
     @swagger_auto_schema(request_body=LoginSerializer)
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=400)
+        # API VALIDATION CHANGE: Validate required fields, optional fields,
+        # and data types before login processing.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
+            return Response(schema_error, status=status_code)
 
         user, error = login_user(
             email=serializer.validated_data["email"],
@@ -300,7 +306,9 @@ class LoginMFAAPI(APIView):
     @swagger_auto_schema(request_body=LoginMFASerializer)
     def post(self, request):
         serializer = LoginMFASerializer(data=request.data)
-        if not serializer.is_valid(): 
+        # API VALIDATION CHANGE: Validate request schema before MFA login.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
             create_audit_log(
                 user=None,
                 action="FAILED_MFA_LOGIN",
@@ -308,7 +316,7 @@ class LoginMFAAPI(APIView):
                 description="Failed MFA login attempt",
                 signature_meaning="Failed MFA electronic signature"
             )
-            return Response(serializer.errors, status=400)
+            return Response(schema_error, status=status_code)
 
         result, error = login_user_with_mfa(**serializer.validated_data, request=request)
         if error:
@@ -338,8 +346,10 @@ class VerifyLoginOTPAPI(APIView):
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
         serializer = VerifyLoginOTPSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=400)
+        # API VALIDATION CHANGE: Validate request schema before OTP verification.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
+            return Response(schema_error, status=status_code)
 
         user, error = verify_login_otp(
             email=serializer.validated_data["email"],
@@ -384,11 +394,13 @@ class ForgotPasswordAPI(APIView):
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate forgot-password request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         result, error = forgot_password_user(
@@ -443,11 +455,13 @@ class ResetPasswordAPI(APIView):
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate reset-password request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         user, error = reset_password_user(
@@ -499,11 +513,13 @@ class ChangePasswordAPI(APIView):
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate change-password request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         try:
@@ -659,11 +675,13 @@ class IntegrityCheckAPI(APIView):
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate integrity-check request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         response = integrity_check_service(
@@ -777,11 +795,13 @@ class DocumentUploadAPI(APIView):
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate document-upload request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         user_id = serializer.validated_data[
@@ -996,11 +1016,13 @@ class ProfilePhotoUploadAPI(APIView):
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate profile-photo request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         uploaded_file = serializer.validated_data[
@@ -1125,11 +1147,13 @@ class UploadFormAPI(APIView):
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate upload-form request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         user_id = serializer.validated_data[
@@ -1190,11 +1214,13 @@ class DeleteUploadFormAPI(APIView):
             )
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate delete-upload-form request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         user_id = serializer.validated_data[
@@ -1265,11 +1291,13 @@ class ViewUploadFormAPI(APIView):
             data=request.GET
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate view-upload-form query schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         form_id = serializer.validated_data[

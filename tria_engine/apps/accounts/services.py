@@ -123,6 +123,23 @@ def validate_api_endpoint_availability(
     return None, None
 
 
+# API VALIDATION CHANGE: Shared request-schema validation response for required
+# fields, optional fields, and serializer data types.
+def validate_api_request_schema(serializer):
+    if serializer.is_valid():
+        return None, None
+
+    request_schema = {}
+    if hasattr(serializer, "get_request_schema"):
+        request_schema = serializer.get_request_schema()
+
+    return {
+        "message": "Request schema validation failed",
+        "request_schema": request_schema,
+        "errors": serializer.errors,
+    }, 400
+
+
 def _security_setting(name, default):
     security = getattr(settings, "TRIA_SECURITY", {})
     return security.get(name, default)
