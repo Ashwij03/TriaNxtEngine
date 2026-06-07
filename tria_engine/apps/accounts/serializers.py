@@ -152,6 +152,20 @@ class RegisterSerializer(serializers.ModelSerializer):
         return data
     confirm_password = serializers.CharField(write_only=True)
 
+    def validate(self, data):
+
+     if not isinstance(data.get("username"), str):
+         raise serializers.ValidationError({
+             "username": "Must be a string"
+         })
+
+     if not isinstance(data.get("email"), str):
+         raise serializers.ValidationError({
+             "email": "Must be a string"
+         })
+
+     return data
+
     class Meta:
         model = User
         # FIX: Removed "password2" from fields — it was never declared as a serializer
@@ -207,6 +221,19 @@ class RegisterSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField(required=True)
     password = serializers.CharField(write_only=True)
+    def validate(self, data):
+
+        if not isinstance(data["email"], str):
+            raise serializers.ValidationError({
+                "email": "Email must be string"
+            })
+
+        if not isinstance(data["password"], str):
+            raise serializers.ValidationError({
+                "password": "Password must be string"
+            })
+
+        return data
     
     # def validate(self, data):
     #     if not data.get("email") and not data.get("username"):
@@ -315,7 +342,15 @@ class DocumentUploadSerializer(serializers.Serializer):
                 )
 
         return data
+    
+    def validate_user_id(self, value):
 
+        if not isinstance(value, int):
+            raise serializers.ValidationError(
+                "user_id must be integer"
+            )
+    
+        return value
     user_id = serializers.IntegerField()
 
     uploaded_by = serializers.EmailField(
@@ -387,11 +422,34 @@ class UploadFormSerializer(serializers.ModelSerializer):
                 )
     
         return data
+    
+        def validate_user_id(self, value):
+
+           if not isinstance(value, int):
+            raise serializers.ValidationError(
+                "user_id must be integer"
+            )
+
+        return value
 
 
 class DeleteUploadFormSerializer(
     serializers.Serializer
 ):
+
+    def validate(self, data):
+
+        if not isinstance(data["user_id"], int):
+            raise serializers.ValidationError({
+                "user_id": "Must be integer"
+            })
+
+        if not isinstance(data["form_id"], int):
+            raise serializers.ValidationError({
+                "form_id": "Must be integer"
+            })
+
+        return data
 
     user_id = serializers.IntegerField(
         required=True
@@ -404,7 +462,20 @@ class DeleteUploadFormSerializer(
 
 class ViewUploadFormSerializer(
     serializers.Serializer
-):
+):  
+    def validate(self, data):
+
+        if not isinstance(data["user_id"], int):
+            raise serializers.ValidationError({
+                "user_id": "Must be integer"
+            })
+
+        if not isinstance(data["form_id"], int):
+            raise serializers.ValidationError({
+                "form_id": "Must be integer"
+            })
+
+        return data
 
     form_id = serializers.IntegerField(
         required=True
@@ -446,6 +517,15 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
             )
 
         return value
+
+        def validate_user_id(self, value):
+        
+            if not isinstance(value, int):
+                raise serializers.ValidationError(
+                    "user_id must be integer"
+                )
+        
+            return value
     
 
 class AuditLogSerializer(serializers.ModelSerializer):
