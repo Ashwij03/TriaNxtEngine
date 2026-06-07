@@ -282,6 +282,35 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
             "password": {"write_only": True}
         }
 
+    username = serializers.CharField(
+        min_length=3,
+        max_length=30
+    )
+
+    password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        max_length=50
+    )
+
+    confirm_password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        max_length=50
+    )
+
+    first_name = serializers.CharField(
+        required=False,
+        min_length=2,
+        max_length=50
+    )
+
+    last_name = serializers.CharField(
+        required=False,
+        min_length=2,
+        max_length=50
+    )
+
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("A user with this email already exists.")
@@ -318,28 +347,35 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
     
 
 class LoginSerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(required=True)
-    password = serializers.CharField(write_only=True)
-    
-    # def validate(self, data):
-    #     if not data.get("email") and not data.get("username"):
-    #         raise serializers.ValidationError("Either email or username is required")
-    #     return data
+    email = serializers.EmailField(
+    max_length=100
+)
+
+    password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        max_length=50
+    )
     
     
 class LoginMFASerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(required=True)
-    password = serializers.CharField(write_only=True)
-    def validate(self, data):
-        # API VALIDATION CHANGE: Validate required fields and data types through
-        # the shared request-schema helper.
-        self.validate_request_schema(data)
-        return data
+    email = serializers.EmailField(
+    max_length=100
+)
+
+    password = serializers.CharField(
+        min_length=8,
+        max_length=50,
+        write_only=True
+    )
 
 
 class VerifyLoginOTPSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
-    otp_code = serializers.CharField(max_length=6, required=True)
+    otp_code = serializers.CharField(
+        max_length=6,
+        required=True
+    )
 
 
 class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
@@ -351,23 +387,44 @@ class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
 # the need for the caller to track an internal user_id and makes the API consistent
 # with every other password-related endpoint that identifies users by email.
 class ResetPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(required=True)
-    otp_code = serializers.CharField(max_length=6, required=True)
-    new_password = serializers.CharField(write_only=True)
+    otp_code = serializers.CharField(
+    min_length=6,
+    max_length=6
+)
+
+    new_password = serializers.CharField(
+        min_length=8,
+        max_length=50,
+        write_only=True
+    )
+
     def validate(self, data):
-        # API VALIDATION CHANGE: Validate actual reset-password schema fields.
-        self.validate_request_schema(data)
-        return data
+            # API VALIDATION CHANGE: Validate actual reset-password schema fields.
+            self.validate_request_schema(data)
+            return data
 
 
 class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
     # username = serializers.CharField(required=False)
-    current_password = serializers.CharField(write_only=True, required=True)
-    new_password = serializers.CharField(write_only=True)
-    confirm_password = serializers.CharField(write_only=True, required=True)
+    current_password = serializers.CharField(
+    min_length=8,
+    max_length=50,
+    write_only=True
+)
 
-    def validate(self, data):
+new_password = serializers.CharField(
+    min_length=8,
+    max_length=50,
+    write_only=True
+)
+
+confirm_password = serializers.CharField(
+    min_length=8,
+    max_length=50,
+    write_only=True
+)
+def validate(self, data):
         # API VALIDATION CHANGE: Validate request schema before password rules.
         self.validate_request_schema(data)
 
@@ -390,7 +447,10 @@ class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Seriali
         self.validate_request_schema(data)
         return data
 
-    user_id = serializers.IntegerField()
+    user_id = serializers.IntegerField(
+        min_value=1,
+        max_value=99999999
+    )
 
     uploaded_by = serializers.EmailField(
         required=True
@@ -458,12 +518,14 @@ class DeleteUploadFormSerializer(
 ):
 
     user_id = serializers.IntegerField(
-        required=True
-    )
+    min_value=1,
+    max_value=99999999
+)
 
     form_id = serializers.IntegerField(
-        required=True
-    )
+    min_value=1,
+    max_value=99999999
+)
 
 
 class ViewUploadFormSerializer(
@@ -472,8 +534,9 @@ class ViewUploadFormSerializer(
 ):
 
     form_id = serializers.IntegerField(
-        required=True
-    )
+    min_value=1,
+    max_value=99999999
+)
 
 
 class IntegritySerializer(RequestSchemaValidationMixin, serializers.Serializer):
@@ -482,8 +545,10 @@ class IntegritySerializer(RequestSchemaValidationMixin, serializers.Serializer):
 
 class ProfilePhotoUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     photo = serializers.FileField()
-    email = serializers.EmailField(required=True)
-    user_id = serializers.IntegerField()
+    email = serializers.EmailField(required=True, max_length=100)
+    
+    user_id = serializers.IntegerField(min_value=1,
+         max_value=99999999)
 
     def validate(self, data):
         # API VALIDATION CHANGE: Validate profile-photo request schema.
