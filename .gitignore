@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 db.sqlite3
+
+# Ignore migrations folders
+tria_engine/apps/accounts/migrations/
+tria_engine/apps/organizations/migrations/
