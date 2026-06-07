@@ -7,6 +7,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import password_changed, validate_password
 from django.utils import timezone
+from django.contrib.auth import authenticate, login
 
 from .audit import log_audit_event
 from .models import PasswordResetToken, LoginOTP, UploadedDocument, AuditLog, UploadForm, UploadLog
@@ -321,14 +322,31 @@ def get_all_users_service():
     return User.objects.all()
 
 
+
 def login_user(email, password, request=None):
-    user = authenticate(request=request, username=email, password=password)
+
+    user = authenticate(
+        request=request,
+        username=email,
+        password=password
+    )
+
     if user is None:
-        log_audit_event("login_failed", request=request, status="failed", details={"email": email})
+        log_audit_event(
+            "login_failed",
+            request=request,
+            status="failed",
+            details={"email": email}
+        )
         return None, "Invalid credentials"
 
     if not user.is_active:
-        log_audit_event("login_inactive_user", user=user, request=request, status="failed")
+        log_audit_event(
+            "login_inactive_user",
+            user=user,
+            request=request,
+            status="failed"
+        )
         return None, "User account is inactive"
 
     if getattr(user, "must_change_password", False):
@@ -338,7 +356,19 @@ def login_user(email, password, request=None):
             request=request,
             status="failed",
         )
-        return None, "Password reset required due to a security event. Please reset your password."
+        return None, (
+            "Password reset required due to a security event. "
+            "Please reset your password."
+        )
+
+    # API VALIDATION CHANGE:
+    # Create authenticated session for SessionAuthentication.
+    if request:
+        login(
+            request,
+            user,
+            backend="django.contrib.auth.backends.ModelBackend"
+        )
 
     return user, None
 
