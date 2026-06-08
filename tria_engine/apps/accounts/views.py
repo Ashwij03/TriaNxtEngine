@@ -12,6 +12,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.exceptions import MethodNotAllowed, ValidationError
 from rest_framework import serializers
+from django.core.paginator import Paginator
+#from .serializers import PaginationSerializer
 
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
@@ -20,7 +22,7 @@ from .serializers import (
     UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
-    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer
+    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer 
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
@@ -215,14 +217,52 @@ class RegisterAPI(APIView):
 @method_decorator(csrf_exempt, name='dispatch')
 class UserListAPI(APIView):
     permission_classes = [IsAuthenticated]
-
     @swagger_auto_schema(responses={200: UserListSerializer(many=True)})
     def get(self, request):
+
         if request.user.is_superuser:
             users = get_all_users_service()
         else:
-            users = User.objects.filter(organization=request.user.organization)
-            
+            users = User.objects.filter(
+                organization=request.user.organization
+            )
+
+        # =====================================================
+        # API VALIDATION CHANGE: Pagination validation
+        # =====================================================
+
+        pagination_serializer = PaginationSerializer(
+            data=request.GET
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            pagination_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        page_number = pagination_serializer.validated_data[
+            "page_number"
+        ]
+
+        page_size = pagination_serializer.validated_data[
+            "page_size"
+        ]
+
+        paginator = Paginator(
+            users,
+            page_size
+        )
+
+        page = paginator.get_page(
+            page_number
+        )
+
         create_audit_log(
             user=request.user,
             action="VIEW_USERS",
@@ -230,8 +270,37 @@ class UserListAPI(APIView):
             description=f"{request.user.username} viewed users list",
             signature_meaning="User electronically signed for viewing users"
         )
+
+        return Response(
+            {
+                "page_number": page_number,
+                "page_size": page_size,
+                "total_count": paginator.count,
+                "total_pages": paginator.num_pages,
+                "results": UserListSerializer(
+                    page.object_list,
+                    many=True
+                ).data
+            },
+            status=200
+        )
+    
+
+    # @swagger_auto_schema(responses={200: UserListSerializer(many=True)})
+    # def get(self, request):
+    #     if request.user.is_superuser:
+    #         users = get_all_users_service()
+    #     else:
+    #         users = User.objects.filter(organization=request.user.organization)    
+        # create_audit_log(
+        #     user=request.user,
+        #     action="VIEW_USERS",
+        #     ip_address=request.META.get('REMOTE_ADDR'),
+        #     description=f"{request.user.username} viewed users list",
+        #     signature_meaning="User electronically signed for viewing users"
+        # )
         
-        return Response(UserListSerializer(users, many=True).data)
+        # return Response(UserListSerializer(users, many=True).data)
 
 
 
@@ -938,6 +1007,43 @@ class DocumentListAPI(APIView):
                 organization=request.user.organization
             ).order_by("document_number")
             
+        # =====================================================
+        # API VALIDATION CHANGE: Pagination validation
+        # =====================================================
+
+        pagination_serializer = PaginationSerializer(
+            data=request.GET
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            pagination_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        page_number = pagination_serializer.validated_data[
+            "page_number"
+        ]
+
+        page_size = pagination_serializer.validated_data[
+            "page_size"
+        ]
+
+        paginator = Paginator(
+            documents,
+            page_size
+        )
+
+        page = paginator.get_page(
+            page_number
+        )    
+         #   
+            
         create_audit_log(
             user=request.user,
             action="VIEW_DOCUMENTS",
@@ -945,8 +1051,21 @@ class DocumentListAPI(APIView):
             description=f"{request.user.username} viewed document list",
             signature_meaning="Document viewing electronically signed"
         )
+        return Response(
+    {
+        "page_number": page_number,
+        "page_size": page_size,
+        "total_count": paginator.count,
+        "total_pages": paginator.num_pages,
+        "results": UploadedDocumentSerializer(
+            page.object_list,
+            many=True
+        ).data
+    },
+    status=200
+)
         
-        return Response(UploadedDocumentSerializer(documents, many=True).data, status=200)
+        # return Response(UploadedDocumentSerializer(documents, many=True).data, status=200)
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1801,26 +1920,52 @@ class AuditLogsAPI(APIView):
     def get(self, request):
 
         logs = get_audit_logs_service()
+        # =====================================================
+        # API VALIDATION CHANGE: Pagination validation
+        # =====================================================
+    
+        pagination_serializer = PaginationSerializer(
+            data=request.GET
+        )
 
-        create_audit_log(
-            user=request.user,
-            action="LOGIN",
-            ip_address=request.META.get(
-                "REMOTE_ADDR"
-            ),
-            description=(
-                "Viewed audit logs"
-            ),
-            signature_meaning=(
-                "Electronic signature recorded"
+        schema_error, status_code = validate_api_request_schema(
+            pagination_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
             )
+
+        page_number = pagination_serializer.validated_data[
+        "page_number"
+        ]
+
+        page_size = pagination_serializer.validated_data[
+        "page_size"
+        ]
+
+        paginator = Paginator(
+            logs,
+            page_size
         )
 
-        serializer = AuditLogSerializer(
-            logs,
-            many=True
+        page = paginator.get_page(
+        page_number
         )
-        
+
+        # create_audit_log(
+        #     user=request.user,
+        #     action="LOGIN",
+        #     ip_address=request.META.get(
+        #         "REMOTE_ADDR"
+        #     ),
+        #     description="Viewed audit logs",
+        #     signature_meaning="Electronic signature recorded"
+        # )
+
         create_audit_log(
             user=request.user,
             action="VIEW_AUDIT_LOGS",
@@ -1830,6 +1975,49 @@ class AuditLogsAPI(APIView):
         )
 
         return Response(
-            serializer.data,
+            {
+                "page_number": page_number,
+                "page_size": page_size,
+                "total_count": paginator.count,
+                "total_pages": paginator.num_pages,
+                "results": AuditLogSerializer(
+                    page.object_list,
+                    many=True
+                ).data
+            },
             status=200
         )
+        
+        
+
+        # create_audit_log(
+        #     user=request.user,
+        #     action="LOGIN",
+        #     ip_address=request.META.get(
+        #         "REMOTE_ADDR"
+        #     ),
+        #     description=(
+        #         "Viewed audit logs"
+        #     ),
+        #     signature_meaning=(
+        #         "Electronic signature recorded"
+        #     )
+        # )
+
+        # serializer = AuditLogSerializer(
+        #     logs,
+        #     many=True
+        # )
+        
+        # create_audit_log(
+        #     user=request.user,
+        #     action="VIEW_AUDIT_LOGS",
+        #     ip_address=request.META.get('REMOTE_ADDR'),
+        #     description=f"{request.user.username} viewed audit logs",
+        #     signature_meaning="Audit logs viewed electronically"
+        # )
+
+        # return Response(
+        #     serializer.data,
+        #     status=200
+        # )

@@ -122,6 +122,7 @@ class EndpointAvailabilitySerializer(serializers.Serializer):
         return data
 
 
+
 # API VALIDATION CHANGE: Shared request-schema helper for required fields,
 # optional fields, and DRF data types used in validation error responses.
 class RequestSchemaValidationMixin:
@@ -159,6 +160,29 @@ class RequestSchemaValidationMixin:
             raise serializers.ValidationError(errors)
 
         return data
+    
+# API VALIDATION CHANGE:
+# Pagination request validation
+class PaginationSerializer(
+    RequestSchemaValidationMixin,
+    serializers.Serializer
+):
+    page_number = serializers.IntegerField(
+        required=False,
+        default=1,
+        min_value=1
+    )
+
+    page_size = serializers.IntegerField(
+        required=False,
+        default=10,
+        min_value=1,
+        max_value=100
+    )
+
+    def validate(self, data):
+        self.validate_request_schema(data)
+        return data    
 
 
 class AnyValueField(serializers.Field):
