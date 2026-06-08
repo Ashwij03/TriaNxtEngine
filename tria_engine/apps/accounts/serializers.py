@@ -390,11 +390,25 @@ class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
 
 class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     
-    def validate(self, data):
-        # API VALIDATION CHANGE: Validate required upload fields and data types.
-        self.validate_request_schema(data)
-        return data
+    
+    # def validate(self, data):
+    #     # API VALIDATION CHANGE: Validate required upload fields and data types.
+    #     self.validate_request_schema(data)
+    #     return data
 
+    # user_id = serializers.IntegerField()
+
+    # uploaded_by = serializers.EmailField(
+    #     required=True
+    # )
+
+    # file = serializers.FileField()
+
+    # category = serializers.ChoiceField(
+    #     choices=UploadedDocument.CATEGORY_CHOICES,
+    #     required=False,
+    #     default="general",
+    # )
     user_id = serializers.IntegerField()
 
     uploaded_by = serializers.EmailField(
@@ -409,7 +423,27 @@ class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Seriali
         default="general",
     )
 
+    def validate(self, data):
+        # API VALIDATION CHANGE:
+        # Validate required upload fields and data types.
+        self.validate_request_schema(data)
+        return data
 
+    # API VALIDATION CHANGE:
+    # Validate uploaded file before reaching service layer.
+    def validate_file(self, value):
+
+        # API VALIDATION CHANGE:
+        # Prevent empty file uploads.
+        if value.size == 0:
+            raise serializers.ValidationError(
+                "Uploaded file is empty."
+            )
+
+        return value
+ 
+    
+    
 class UploadedDocumentSerializer(serializers.ModelSerializer):
     organization = serializers.SerializerMethodField()
     uploaded_by = serializers.CharField(source="uploaded_by.email", read_only=True)

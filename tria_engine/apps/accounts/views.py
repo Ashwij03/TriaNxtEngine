@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.exceptions import MethodNotAllowed, ValidationError
+from rest_framework import serializers
 
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
@@ -1054,14 +1055,28 @@ class DocumentUploadAPI(APIView):
                     schema_error,
                     status=status_code
                 )
-
             user_id = serializer.validated_data[
                 "user_id"
             ]
 
+            # API VALIDATION CHANGE:
+            # Email validated for request consistency.
+            uploaded_by_email = serializer.validated_data[
+                "uploaded_by"
+            ]
+
             uploaded_file = serializer.validated_data[
                 "file"
-            ]
+            ]    
+
+            # user_id = serializer.validated_data[
+            #     "user_id"
+            # ]
+
+            # uploaded_file = serializer.validated_data[
+            #     "file"
+            # ]
+            
 
             category = serializer.validated_data.get(
                 "category",
@@ -1104,15 +1119,36 @@ class DocumentUploadAPI(APIView):
                 status=201,
             )
 
-        except Exception as e:
+        # except Exception as e:
 
+        #     return Response(
+        #         {
+        #             "message": str(e)
+        #         },
+        #         status=500
+        #     )
+        
+        # API VALIDATION CHANGE:
+        # Return standardized validation response
+        # for file upload errors.
+        except (ValidationError, serializers.ValidationError) as e:
             return Response(
                 {
-                    "message": str(e)
+                    "message": "Validation failed",
+                    "errors": getattr(e, "detail", str(e))
+                },
+                status=400
+            )
+        except Exception as e:
+            
+            return Response(
+                {
+                    "message": "Internal Server Error"
                 },
                 status=500
             )
-            
+
+        
 
 @method_decorator(csrf_exempt, name='dispatch')
 class DocumentDownloadAPI(APIView):
