@@ -159,6 +159,80 @@ class RequestSchemaValidationMixin:
             raise serializers.ValidationError(errors)
 
         return data
+    
+# API VALIDATION CHANGE:
+# Pagination request validation
+class PaginationSerializer(
+    RequestSchemaValidationMixin,
+    serializers.Serializer
+):
+    page_number = serializers.IntegerField(
+        required=False,
+        default=1,
+        min_value=1
+    )
+
+    page_size = serializers.IntegerField(
+        required=False,
+        default=10,
+        min_value=1,
+        max_value=100
+    )
+
+    def validate(self, data):
+        self.validate_request_schema(data)
+        return data 
+
+# API VALIDATION CHANGE:
+# Filtering validation
+# Validates allowed filter fields and values.
+
+class FilterSerializer(
+    RequestSchemaValidationMixin,
+    serializers.Serializer
+):
+    filter_by = serializers.CharField(
+        required=False,
+        allow_blank=True
+    )
+
+    filter_value = serializers.CharField(
+        required=False,
+        allow_blank=True
+    )
+
+    ALLOWED_FILTERS = [
+        "document_number",
+        "original_name",
+        "content_type",
+        "category"
+    ]
+
+    def validate(self, data):
+        self.validate_request_schema(data)
+
+        filter_by = data.get("filter_by")
+        filter_value = data.get("filter_value")
+
+        # API VALIDATION CHANGE:
+        # Validate filter field
+        if filter_by and filter_by not in self.ALLOWED_FILTERS:
+            raise serializers.ValidationError({
+                "filter_by": (
+                    f"Invalid filter field. "
+                    f"Allowed values: {', '.join(self.ALLOWED_FILTERS)}"
+                )
+            })
+
+        # API VALIDATION CHANGE:
+        # Empty filter value check
+        if filter_by and not filter_value:
+            raise serializers.ValidationError({
+                "filter_value":
+                "Filter value is required when filter_by is provided."
+            })
+
+        return data  
 
 
 class AnyValueField(serializers.Field):
@@ -429,14 +503,14 @@ class ResetPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializ
             raise serializers.ValidationError(
                 "OTP must contain only numbers"
             )
-    
+
         otp_int = int(value)
-    
+
         if otp_int < 100000 or otp_int > 999999:
             raise serializers.ValidationError(
                 "OTP must be between 100000 and 999999"
             )
-    
+
         return value
 
 
