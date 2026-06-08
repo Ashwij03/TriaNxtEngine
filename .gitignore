@@ -1,7 +1,10 @@
-__pycache__/
+pycache/
 *.pyc
 db.sqlite3
 
 # Ignore migrations folders
 tria_engine/apps/accounts/migrations/
 tria_engine/apps/organizations/migrations/
+tria_engine/apps/pycache/
+tria_engine/apps/accounts/pycache/
+tria_engine/apps/organizations/pycache/
