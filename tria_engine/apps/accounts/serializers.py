@@ -122,7 +122,6 @@ class EndpointAvailabilitySerializer(serializers.Serializer):
         return data
 
 
-
 # API VALIDATION CHANGE: Shared request-schema helper for required fields,
 # optional fields, and DRF data types used in validation error responses.
 class RequestSchemaValidationMixin:
@@ -160,29 +159,6 @@ class RequestSchemaValidationMixin:
             raise serializers.ValidationError(errors)
 
         return data
-    
-# API VALIDATION CHANGE:
-# Pagination request validation
-class PaginationSerializer(
-    RequestSchemaValidationMixin,
-    serializers.Serializer
-):
-    page_number = serializers.IntegerField(
-        required=False,
-        default=1,
-        min_value=1
-    )
-
-    page_size = serializers.IntegerField(
-        required=False,
-        default=10,
-        min_value=1,
-        max_value=100
-    )
-
-    def validate(self, data):
-        self.validate_request_schema(data)
-        return data    
 
 
 class AnyValueField(serializers.Field):
@@ -306,6 +282,35 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
             "password": {"write_only": True}
         }
 
+    username = serializers.CharField(
+        min_length=3,
+        max_length=30
+    )
+
+    password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        max_length=50
+    )
+
+    confirm_password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        max_length=50
+    )
+
+    first_name = serializers.CharField(
+        required=False,
+        min_length=2,
+        max_length=50
+    )
+
+    last_name = serializers.CharField(
+        required=False,
+        min_length=2,
+        max_length=50
+    )
+
     # API VALIDATION CHANGE:
     # Duplicate email detected.
     # API should return HTTP 409 Conflict.
@@ -347,28 +352,50 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
     
 
 class LoginSerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(required=True)
-    password = serializers.CharField(write_only=True)
-    
-    # def validate(self, data):
-    #     if not data.get("email") and not data.get("username"):
-    #         raise serializers.ValidationError("Either email or username is required")
-    #     return data
+    email = serializers.EmailField(
+    max_length=100
+)
+
+    password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        max_length=50
+    )
     
     
 class LoginMFASerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(required=True)
-    password = serializers.CharField(write_only=True)
-    def validate(self, data):
-        # API VALIDATION CHANGE: Validate required fields and data types through
-        # the shared request-schema helper.
-        self.validate_request_schema(data)
-        return data
+    email = serializers.EmailField(
+    max_length=100
+)
+
+    password = serializers.CharField(
+        min_length=8,
+        max_length=50,
+        write_only=True
+    )
 
 
 class VerifyLoginOTPSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
-    otp_code = serializers.CharField(max_length=6, required=True)
+    otp_code = serializers.CharField(
+        max_length=6,
+        required=True
+    )
+    def validate_otp_code(self, value):
+
+        if not value.isdigit():
+            raise serializers.ValidationError(
+                "OTP must contain only numbers"
+            )
+
+        otp_int = int(value)
+
+        if otp_int < 100000 or otp_int > 999999:
+            raise serializers.ValidationError(
+                "OTP must be between 100000 and 999999"
+            )
+
+        return value
 
 
 class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
@@ -380,23 +407,60 @@ class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
 # the need for the caller to track an internal user_id and makes the API consistent
 # with every other password-related endpoint that identifies users by email.
 class ResetPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(required=True)
-    otp_code = serializers.CharField(max_length=6, required=True)
-    new_password = serializers.CharField(write_only=True)
+    otp_code = serializers.CharField(
+    min_length=6,
+    max_length=6
+)
+
+    new_password = serializers.CharField(
+        min_length=8,
+        max_length=50,
+        write_only=True
+    )
+
     def validate(self, data):
-        # API VALIDATION CHANGE: Validate actual reset-password schema fields.
-        self.validate_request_schema(data)
-        return data
+            # API VALIDATION CHANGE: Validate actual reset-password schema fields.
+            self.validate_request_schema(data)
+            return data
+    
+    def validate_otp_code(self, value):
+
+        if not value.isdigit():
+            raise serializers.ValidationError(
+                "OTP must contain only numbers"
+            )
+    
+        otp_int = int(value)
+    
+        if otp_int < 100000 or otp_int > 999999:
+            raise serializers.ValidationError(
+                "OTP must be between 100000 and 999999"
+            )
+    
+        return value
 
 
 class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(required=True)
     # username = serializers.CharField(required=False)
-    current_password = serializers.CharField(write_only=True, required=True)
-    new_password = serializers.CharField(write_only=True)
-    confirm_password = serializers.CharField(write_only=True, required=True)
+    current_password = serializers.CharField(
+    min_length=8,
+    max_length=50,
+    write_only=True
+)
 
-    def validate(self, data):
+new_password = serializers.CharField(
+    min_length=8,
+    max_length=50,
+    write_only=True
+)
+
+confirm_password = serializers.CharField(
+    min_length=8,
+    max_length=50,
+    write_only=True
+)
+def validate(self, data):
         # API VALIDATION CHANGE: Validate request schema before password rules.
         self.validate_request_schema(data)
 
@@ -412,33 +476,17 @@ class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
 
         return data
 
-# class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
+class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     
-#     def validate(self, data):
-#         # API VALIDATION CHANGE: Validate required upload fields and data types.
-#         self.validate_request_schema(data)
-#         return data
+    def validate(self, data):
+        # API VALIDATION CHANGE: Validate required upload fields and data types.
+        self.validate_request_schema(data)
+        return data
 
-#     user_id = serializers.IntegerField()
-
-#     uploaded_by = serializers.EmailField(
-#         required=True
-#     )
-
-#     file = serializers.FileField()
-
-#     category = serializers.ChoiceField(
-#         choices=UploadedDocument.CATEGORY_CHOICES,
-#         required=False,
-#         default="general",
-#     )
-
-class DocumentUploadSerializer(
-    RequestSchemaValidationMixin,
-    serializers.Serializer
-):
-
-    user_id = serializers.IntegerField()
+    user_id = serializers.IntegerField(
+        min_value=1,
+        max_value=99999999
+    )
 
     uploaded_by = serializers.EmailField(
         required=True
@@ -452,24 +500,6 @@ class DocumentUploadSerializer(
         default="general",
     )
 
-    def validate(self, data):
-        # API VALIDATION CHANGE:
-        # Validate required upload fields and data types.
-        self.validate_request_schema(data)
-        return data
-
-    # API VALIDATION CHANGE:
-    # Validate uploaded file before reaching service layer.
-    def validate_file(self, value):
-
-        # API VALIDATION CHANGE:
-        # Prevent empty file uploads.
-        if value.size == 0:
-            raise serializers.ValidationError(
-                "Uploaded file is empty."
-            )
-
-        return value
 
 class UploadedDocumentSerializer(serializers.ModelSerializer):
     organization = serializers.SerializerMethodField()
@@ -524,12 +554,14 @@ class DeleteUploadFormSerializer(
 ):
 
     user_id = serializers.IntegerField(
-        required=True
-    )
+    min_value=1,
+    max_value=99999999
+)
 
     form_id = serializers.IntegerField(
-        required=True
-    )
+    min_value=1,
+    max_value=99999999
+)
 
 
 class ViewUploadFormSerializer(
@@ -538,8 +570,9 @@ class ViewUploadFormSerializer(
 ):
 
     form_id = serializers.IntegerField(
-        required=True
-    )
+    min_value=1,
+    max_value=99999999
+)
 
 
 class IntegritySerializer(RequestSchemaValidationMixin, serializers.Serializer):
@@ -548,8 +581,10 @@ class IntegritySerializer(RequestSchemaValidationMixin, serializers.Serializer):
 
 class ProfilePhotoUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     photo = serializers.FileField()
-    email = serializers.EmailField(required=True)
-    user_id = serializers.IntegerField()
+    email = serializers.EmailField(required=True, max_length=100)
+    
+    user_id = serializers.IntegerField(min_value=1,
+         max_value=99999999)
 
     def validate(self, data):
         # API VALIDATION CHANGE: Validate profile-photo request schema.
