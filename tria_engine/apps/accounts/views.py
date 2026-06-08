@@ -22,7 +22,7 @@ from .serializers import (
     UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
-    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer 
+    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer 
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
@@ -1025,7 +1025,43 @@ class DocumentListAPI(APIView):
                 schema_error,
                 status=status_code
             )
+# =====================================================
+# API VALIDATION CHANGE: Filtering validation
+# =====================================================
+           
+            
+        filter_serializer = FilterSerializer(
+            data=request.GET
+            )
 
+        schema_error, status_code = validate_api_request_schema(
+            filter_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        filter_by = filter_serializer.validated_data.get(
+            "filter_by"
+        )
+
+        filter_value = filter_serializer.validated_data.get(
+            "filter_value"
+        )
+  # =====================================================
+# API VALIDATION CHANGE: Apply filtering
+# =====================================================      
+        if filter_by and filter_value:
+            documents = documents.filter(
+                **{
+                    filter_by: filter_value
+                }
+            )
+            
         page_number = pagination_serializer.validated_data[
             "page_number"
         ]

@@ -182,7 +182,58 @@ class PaginationSerializer(
 
     def validate(self, data):
         self.validate_request_schema(data)
-        return data    
+        return data 
+
+# API VALIDATION CHANGE:
+# Filtering validation
+# Validates allowed filter fields and values.
+
+class FilterSerializer(
+    RequestSchemaValidationMixin,
+    serializers.Serializer
+):
+    filter_by = serializers.CharField(
+        required=False,
+        allow_blank=True
+    )
+
+    filter_value = serializers.CharField(
+        required=False,
+        allow_blank=True
+    )
+
+    ALLOWED_FILTERS = [
+        "document_number",
+        "original_name",
+        "content_type",
+        "category"
+    ]
+
+    def validate(self, data):
+        self.validate_request_schema(data)
+
+        filter_by = data.get("filter_by")
+        filter_value = data.get("filter_value")
+
+        # API VALIDATION CHANGE:
+        # Validate filter field
+        if filter_by and filter_by not in self.ALLOWED_FILTERS:
+            raise serializers.ValidationError({
+                "filter_by": (
+                    f"Invalid filter field. "
+                    f"Allowed values: {', '.join(self.ALLOWED_FILTERS)}"
+                )
+            })
+
+        # API VALIDATION CHANGE:
+        # Empty filter value check
+        if filter_by and not filter_value:
+            raise serializers.ValidationError({
+                "filter_value":
+                "Filter value is required when filter_by is provided."
+            })
+
+        return data  
 
 
 class AnyValueField(serializers.Field):
