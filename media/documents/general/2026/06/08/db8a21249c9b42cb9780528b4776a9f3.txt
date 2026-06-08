@@ -1,0 +1,226 @@
+1.Super can be used for immediate parent clas instant variable.
+2.super can be used to invoke immediate parent class method.
+3.super can be used to invoke immediate parent class constructor.
+
+add(int,int)
+add(int,int,int)
+
+
+--Method overriding--
+A
+add(int,int)
+B
+add(int,int)
+
+-polymorphism-
+single object using in many ways.
+
+///
+1.
+class A{
+
+}
+class B extends A
+{
+.....
+   }
+2.
+interface A
+{
+....
+    }
+interface B extends A
+{
+....
+   }
+
+3.
+interface A{
+....}
+class B implements A{
+..}
+
+
+ex--
+interface  A
+{
+    public void display();
+    public void show();
+}
+class B implements A
+{
+    public void display()
+    {
+        System.out.println("hi");
+    }
+    public void show()
+    {
+        System.out.println("hello");
+    }
+}
+public class Demo
+{
+    public static void main(String args[ ])
+    {
+        B b = new B();
+        b.display();
+        b.show();
+    }
+}
+
+//class c extends A,B
+interface First{
+    public void mymethod();
+}
+interface Second{
+  public void othermethod(); 
+}
+class Demo implements First,Second
+{
+    public void mymethod()
+    {
+        System.out.println("adnan");
+    }
+    public void othermethod()
+    {
+        System.out.println("hii");
+    }
+}
+ public class Test{
+     public static void main(String args[ ])
+     {
+         Demo d = new Demo();
+         d.mymethod();
+         d.othermethod();
+     }
+ }
+
+//
+to convert primitive data types to objects and objects into primitive data types.
+1. byte....Byte
+2. short...Short
+3. int...Integer
+4. double...Double
+5. char...Char
+6.boolean...Boolean
+
+
+//
+public class BasicAO
+{
+public int sum(int input1, int input2)
+{
+return input1+input2;
+}
+.........
+
+
+public class Test
+{
+private BasicAO ar
+@Before 
+public void Createobject()
+{
+ar=new BasicAO();
+}
+@Test public testsum()
+{
+int input1=10;
+int input2=20;
+Assert.assertEquals(30,ar.testsum(input1,input2)); 
+ }
+}
+
+//
+1.@Test ...... to identify the actual test case
+2.@Before....to execute some stmt before each test case 
+3.@After......to execute some statement after each test case
+4.@ignore... to ignore some stmts during execution of test case
+5.@Beforeall ....to execute some statement before all test cases
+6.@Afterall... to execute some statement after all test cases 
+
+void assertEquals....checks that two primitive objects are equal
+void assertTrue.....checks if the condition is true
+void assertFalse..checks that a condition is false
+void assertNull...checks that objects is Null
+void assertNotNull...checks that objects is Not Null
+
+//
+multithreading is a programming concept to run multiple tasks in a concurrent manner within a single program
+
+//
+DatabaseMetaData dbmd = con.getMetaData();
+dbmd.getDatabaseProductName();
+dbmd.getDatabaseProductVersion();
+dbmb.getMaxColumnsInTable();
+______
+
+ResultSetMetaData
+DatabaseMetaData dbmd = con.getMetaData();
+ResultSet rs = st.exexcutequery(select*from student);
+ResultSetMetaData rsmd = rs.getMetaData
+rsmd.getColumnCount();
+___
+PreparedStatement
+String SqlQuery = insert into emp values(?,?,?,?); 
+PreparedStatement pst = con.PS(SqlQuery);
+Scanner sc= new scanner(System.in);
+while(true)
+{
+    System.out.println("enter employe number");
+    int eno = sc.nextInt();
+    string ename = sc.nextName();
+    double esalaray = sc.nextsalary();
+    pst.setInt(1,eno);
+    pst.setString(2,ename);
+    pst.setdouble(3,esalary);
+    pst.executeupdate();
+    s.o.p("Records inserted successfully");
+	s.o.p("Do you want to insert one more record?");
+	String opn = sc.next();
+    if(option.equalsIgnore(no))
+   {
+   break;
+  }
+}
+
+//
+import java.io.*;
+import javax,servlet.*;
+import javax.servlet.http.*;
+import javax.servlet.annotation.webservlet;
+@WebServlet("//pqr")
+  public class ServletExample extends HttpServlet{
+  public void init (){
+  }
+ public void service (ServletRequest req, ServletResponse res) throws IOException, ServletException{
+ printWriter PW = res.getWriter ;
+ res.setContentType("text/html");
+ PW.prntln("first servlet prgm");
+ }
+ public void destroy(){
+ }
+}
+//
+
+1.auto configuration
+2.springboot starters(dependencies)
+3.embedded servers
+4.cli(command line interface)
+5. spring boot actuators
+
+//
+springboot setup
+1.jdk
+2.sts ide (spring tool suit)
+3.database
+4.postman(micro services,rest apis)
+
+
+export REGION=us-west1
+
+curl -LO raw.githubusercontent.com/Techcps/GSP/master/Provision%20Cloud%20Infrastructure%20with%20Gemini/techcps.sh
+sudo chmod +x techcps.sh
+./techcps.sh
+
+ 
