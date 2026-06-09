@@ -369,6 +369,16 @@ def login_user(email, password, request=None):
             user,
             backend="django.contrib.auth.backends.ModelBackend"
         )
+        
+       # print("LOGIN SUCCESS:", user.username)
+        #print("SETTING LAST_ACTIVITY:", timezone.now())
+        # API VALIDATION CHANGE:
+        # Update last activity after successful login.
+        user.last_activity = timezone.now()
+
+        user.save(
+            update_fields=["last_activity"]
+        )
 
     return user, None
 
