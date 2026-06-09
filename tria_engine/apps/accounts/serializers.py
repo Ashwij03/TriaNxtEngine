@@ -235,6 +235,70 @@ class FilterSerializer(
 
         return data  
 
+# =====================================================
+# API VALIDATION CHANGE:
+# Sorting validation
+# Validates ascending, descending and invalid sort fields.
+# =====================================================
+
+class SortingSerializer(
+    RequestSchemaValidationMixin,
+    serializers.Serializer
+):
+    sort_by = serializers.CharField(
+        required=False,
+        allow_blank=True
+    )
+
+    sort_order = serializers.CharField(
+        required=False,
+        allow_blank=True
+    )
+
+    ALLOWED_SORT_FIELDS = [
+        "document_number",
+        "original_name",
+        "file_size",
+        "created_at",
+        "updated_at",
+        "category",
+        "content_type",
+        "organization",
+        "uploaded_by"
+    ]
+
+    ALLOWED_SORT_ORDERS = [
+        "asc",
+        "desc"
+    ]
+
+    def validate(self, data):
+        self.validate_request_schema(data)
+
+        sort_by = data.get("sort_by")
+        sort_order = data.get("sort_order", "asc")
+
+        # API VALIDATION CHANGE:
+        # Validate sort field
+        if sort_by and sort_by not in self.ALLOWED_SORT_FIELDS:
+            raise serializers.ValidationError({
+                "sort_by": (
+                    f"Invalid sort field. "
+                    f"Allowed values: {', '.join(self.ALLOWED_SORT_FIELDS)}"
+                )
+            })
+
+        # API VALIDATION CHANGE:
+        # Validate sort order
+        if sort_order and sort_order.lower() not in self.ALLOWED_SORT_ORDERS:
+            raise serializers.ValidationError({
+                "sort_order": (
+                    "Sort order must be either 'asc' or 'desc'"
+                )
+            })
+
+        return data
+    
 
 class AnyValueField(serializers.Field):
     def to_internal_value(self, data):

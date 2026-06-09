@@ -1,5 +1,3 @@
-# accounts/views.py
-
 from datetime import timedelta
 from django.contrib.auth import login
 from django.http import FileResponse
@@ -23,7 +21,7 @@ from .serializers import (
     UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
-    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer 
+    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer, SortingSerializer
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
@@ -568,7 +566,7 @@ class VerifyLoginOTPAPI(APIView):
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
         
-        print("LOGIN MFA HIT") ## testing , should remove
+        #print("LOGIN MFA HIT") ## testing , should remove
 
         
         serializer = VerifyLoginOTPSerializer(data=request.data)
@@ -1017,7 +1015,40 @@ class IntegrityCheckAPI(APIView):
 class DocumentListAPI(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(responses={200: UploadedDocumentSerializer(many=True)})
+    # @swagger_auto_schema(responses={200: UploadedDocumentSerializer(many=True)})
+    @swagger_auto_schema(
+    manual_parameters=[
+        openapi.Parameter(
+            'sort_by',
+            openapi.IN_QUERY,
+            description='Field to sort by',
+            type=openapi.TYPE_STRING,
+            enum=[
+                'document_number',
+                'original_name',
+                'file_size',
+                'category',
+                'created_at',
+                'updated_at',
+                'content_type',
+                'organization',
+                'uploaded_by'
+            ]
+        ),
+        openapi.Parameter(
+            'sort_order',
+            openapi.IN_QUERY,
+            description='Sort order',
+            type=openapi.TYPE_STRING,
+            enum=[
+                'asc',
+                'desc'
+            ]
+        )
+    ],
+    responses={200: UploadedDocumentSerializer(many=True)}
+)  
+    
     def get(self, request):
         if request.user.is_superuser:
             documents = UploadedDocument.objects.select_related(
@@ -1077,15 +1108,60 @@ class DocumentListAPI(APIView):
         filter_value = filter_serializer.validated_data.get(
             "filter_value"
         )
-  # =====================================================
-# API VALIDATION CHANGE: Apply filtering
-# =====================================================      
+
+        # =====================================================
+        # API VALIDATION CHANGE: Apply filtering
+        # =====================================================      
         if filter_by and filter_value:
             documents = documents.filter(
                 **{
                     filter_by: filter_value
                 }
             )
+ 
+        # =====================================================
+        # API VALIDATION CHANGE: Sorting validation
+        # =====================================================
+
+        sorting_serializer = SortingSerializer(
+            data=request.GET
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            sorting_serializer
+        )
+
+        if schema_error:
+        
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        sort_by = sorting_serializer.validated_data.get(
+            "sort_by"
+        )
+
+        sort_order = sorting_serializer.validated_data.get(
+            "sort_order",
+            "asc"
+        )
+
+        # =====================================================
+        # API VALIDATION CHANGE: Apply sorting
+        # =====================================================
+
+        if sort_by:
+        
+            if sort_order.lower() == "desc":
+                documents = documents.order_by(
+                    f"-{sort_by}"
+                )
+            else:
+                documents = documents.order_by(
+                    sort_by
+                )     ##       
+            
             
         page_number = pagination_serializer.validated_data[
             "page_number"
@@ -1220,8 +1296,8 @@ class DocumentUploadAPI(APIView):
     
     def post(self, request):
         
-        print("DOCUMENT UPLOAD HIT")  #testing remove later      
-        print("USER:", request.user) #
+        #print("DOCUMENT UPLOAD HIT")  #testing remove later      
+        #print("USER:", request.user) #
 
         try:
 
