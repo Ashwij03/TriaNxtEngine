@@ -374,15 +374,23 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
     )
 
     first_name = serializers.CharField(
-        required=False,
+        required=True,
         min_length=2,
         max_length=50
     )
 
     last_name = serializers.CharField(
-        required=False,
+        required=True,
         min_length=2,
         max_length=50
+    )
+    organization = serializers.PrimaryKeyRelatedField(
+        queryset=Organization.objects.all(),
+        required=True
+    )
+    role = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.none(),
+        required=True
     )
 
     # API VALIDATION CHANGE:
