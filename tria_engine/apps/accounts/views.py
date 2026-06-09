@@ -17,6 +17,7 @@ from django.core.paginator import Paginator
 
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from urllib3 import request
 
 from .serializers import (
     UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
@@ -131,6 +132,7 @@ class APIView(DRFAPIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class RegisterAPI(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
     # API VALIDATION CHANGE: Expected successful registration response schema.
     response_schema = {
@@ -306,6 +308,7 @@ class UserListAPI(APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class LoginAPI(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
     # API VALIDATION CHANGE: Expected successful login response schema.
     response_schema = {
@@ -391,7 +394,7 @@ class LoginAPI(APIView):
 @method_decorator(csrf_exempt, name='dispatch')
 class CheckSessionAPI(APIView):
 
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         manual_parameters=[
@@ -437,6 +440,14 @@ class CheckSessionAPI(APIView):
                     },
                     status=401
                 )
+                
+                #added new print statements for testing session timeout, should remove later
+            # print("NOW:", timezone.now())
+            # print("LAST_ACTIVITY:", user.last_activity)
+            # print(
+            #         "DIFFERENCE:",
+            #         timezone.now() - user.last_activity
+            # )   
 
             inactive_time = (
                 timezone.now() -
@@ -500,6 +511,7 @@ class CheckSessionAPI(APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class LoginMFAAPI(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(request_body=LoginMFASerializer)
@@ -541,6 +553,7 @@ class LoginMFAAPI(APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class VerifyLoginOTPAPI(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
     # API VALIDATION CHANGE: Expected successful MFA verification response schema.
     response_schema = {
@@ -554,6 +567,10 @@ class VerifyLoginOTPAPI(APIView):
 
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
+        
+        print("LOGIN MFA HIT") ## testing , should remove
+
+        
         serializer = VerifyLoginOTPSerializer(data=request.data)
         # API VALIDATION CHANGE: Validate request schema before OTP verification.
         schema_error, status_code = validate_api_request_schema(serializer)
@@ -580,6 +597,12 @@ class VerifyLoginOTPAPI(APIView):
 
         login(request, user, backend="django.contrib.auth.backends.ModelBackend")
         
+        user.last_activity = timezone.now()
+
+        user.save(
+            update_fields=["last_activity"]
+        )
+        
         create_audit_log(
             user=user,
             action="MFA_VERIFIED",
@@ -593,6 +616,7 @@ class VerifyLoginOTPAPI(APIView):
 @method_decorator(csrf_exempt, name='dispatch')
 class ForgotPasswordAPI(APIView):
 
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
@@ -670,7 +694,8 @@ class ForgotPasswordAPI(APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class ResetPasswordAPI(APIView):
-
+    
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     # API VALIDATION CHANGE: Expected successful reset-password response schema.
@@ -752,13 +777,13 @@ class ResetPasswordAPI(APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class ChangePasswordAPI(APIView):
-
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         request_body=ChangePasswordSerializer
     )
     def post(self, request):
+        
 
         serializer = ChangePasswordSerializer(
             data=request.data
@@ -1106,7 +1131,7 @@ class DocumentListAPI(APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class DocumentUploadAPI(APIView):
-
+    
     permission_classes = [IsAuthenticated]
     # API VALIDATION CHANGE: Expected successful document-upload response schema.
     response_schema = {
@@ -1194,6 +1219,9 @@ class DocumentUploadAPI(APIView):
     )
     
     def post(self, request):
+        
+        print("DOCUMENT UPLOAD HIT")  #testing remove later      
+        print("USER:", request.user) #
 
         try:
 
@@ -1238,6 +1266,37 @@ class DocumentUploadAPI(APIView):
                 "general"
             )
 
+            # document, error = upload_document(
+            #     user_id=user_id,
+            #     uploaded_file=uploaded_file,
+            #     uploaded_by=request.user,
+            #     category=category,
+            #     organization=request.user.organization,
+            #     request=request,
+            # )
+
+            # if error:
+
+            #     return Response(
+            #         {
+            #             "message": error
+            #         },
+            #         status=400
+            #     )
+            
+            
+            if uploaded_by_email != request.user.email:
+
+                return Response(
+                    {
+                        "message": (
+                        "uploaded_by must match "
+                        "the authenticated user's email"
+                        )
+                    },
+                    status=400
+                )
+
             document, error = upload_document(
                 user_id=user_id,
                 uploaded_file=uploaded_file,
@@ -1246,16 +1305,6 @@ class DocumentUploadAPI(APIView):
                 organization=request.user.organization,
                 request=request,
             )
-
-            if error:
-
-                return Response(
-                    {
-                        "message": error
-                    },
-                    status=400
-                )
-
             create_audit_log(
                 user=request.user,
                 action="UPLOAD_DOCUMENT",

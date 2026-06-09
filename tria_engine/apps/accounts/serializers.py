@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from tria_engine.apps.organizations.models import Organization
 from .models import  UploadedDocument, UploadForm, AuditLog
+from tria_engine.apps.organizations.models import Role
 
 User = get_user_model()
 
@@ -389,9 +390,10 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
         required=True
     )
     role = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.none(),
+        queryset=Role.objects.all(),
         required=True
     )
+    
 
     # API VALIDATION CHANGE:
     # Duplicate email detected.
@@ -489,10 +491,14 @@ class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
 # the need for the caller to track an internal user_id and makes the API consistent
 # with every other password-related endpoint that identifies users by email.
 class ResetPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
+    email = serializers.EmailField( 
+        required=True
+    )
+    
     otp_code = serializers.CharField(
     min_length=6,
     max_length=6
-)
+    )
 
     new_password = serializers.CharField(
         min_length=8,
@@ -529,32 +535,29 @@ class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
     min_length=8,
     max_length=50,
     write_only=True
-)
-
-new_password = serializers.CharField(
+    )
+    new_password = serializers.CharField(
     min_length=8,
     max_length=50,
     write_only=True
-)
+    )
 
-confirm_password = serializers.CharField(
+    confirm_password = serializers.CharField(
     min_length=8,
     max_length=50,
     write_only=True
-)
-def validate(self, data):
+    )
+    def validate(self, data):
         # API VALIDATION CHANGE: Validate request schema before password rules.
         self.validate_request_schema(data)
 
         if data["new_password"] != data["confirm_password"]:
             raise serializers.ValidationError(
-                "New passwords do not match"
-            )
+                "New passwords do not match")
 
         if data["current_password"] == data["new_password"]:
             raise serializers.ValidationError(
-                "New password must be different from current password"
-            )
+                "New password must be different from current password")
 
         return data
 
