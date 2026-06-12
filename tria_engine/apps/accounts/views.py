@@ -25,7 +25,7 @@ from .serializers import (
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema, validate_rate_limit
 )
 from .models import User, UploadedDocument
 from .audit import log_audit_event
@@ -94,6 +94,26 @@ class APIView(DRFAPIView):
                     "errors": validation_errors,
                 }
             )
+            
+            
+        # =====================================================
+        # API VALIDATION CHANGE:
+        # Rate Limiting validation
+        # Thresholds and response after limit exceeded.
+        # =====================================================
+
+        current_request_count = 1
+        threshold = 100
+        retry_after_seconds = 60
+
+        rate_limit_error, status_code = validate_rate_limit(
+        current_request_count=current_request_count,
+        threshold=threshold,
+        retry_after_seconds=retry_after_seconds,
+        )
+
+        if rate_limit_error:
+            raise ValidationError(rate_limit_error)
 
         return super().initial(request, *args, **kwargs)
 

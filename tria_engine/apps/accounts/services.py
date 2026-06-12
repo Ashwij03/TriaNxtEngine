@@ -24,6 +24,25 @@ from .file_validators import (
 
 User = get_user_model()
 
+# =====================================================
+# API VALIDATION CHANGE:
+# Rate Limiting validation service
+# Checks request count against configured threshold.
+# =====================================================
+
+def validate_rate_limit(
+    current_request_count,
+    threshold,
+    retry_after_seconds
+):
+    if current_request_count > threshold:
+        return {
+            "message": "Rate limit exceeded",
+            "threshold": threshold,
+            "retry_after_seconds": retry_after_seconds,
+        }, 429
+
+    return None, None
 
 # API VALIDATION CHANGE: Central endpoint availability validation for correct
 # method and headers. URL correctness is confirmed by Django before a view is

@@ -306,6 +306,29 @@ class AnyValueField(serializers.Field):
 
     def to_representation(self, value):
         return value
+    
+
+# =====================================================
+# API VALIDATION CHANGE:
+# Rate Limiting validation
+# Validates threshold and retry_after values.
+# =====================================================
+
+class RateLimitSerializer(
+    RequestSchemaValidationMixin,
+    serializers.Serializer
+):
+    threshold = serializers.IntegerField(
+        min_value=1
+    )
+
+    retry_after_seconds = serializers.IntegerField(
+        min_value=1
+    )
+
+    def validate(self, data):
+        self.validate_request_schema(data)
+        return data
 
 
 # API VALIDATION CHANGE: Serializer for validating API response schema
