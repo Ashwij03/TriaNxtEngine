@@ -586,8 +586,6 @@ class VerifyLoginOTPAPI(APIView):
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
         
-        #print("LOGIN MFA HIT") ## testing , should remove
-
         
         serializer = VerifyLoginOTPSerializer(data=request.data)
         # API VALIDATION CHANGE: Validate request schema before OTP verification.
@@ -1316,8 +1314,7 @@ class DocumentUploadAPI(APIView):
     
     def post(self, request):
         
-        #print("DOCUMENT UPLOAD HIT")  #testing remove later      
-        #print("USER:", request.user) #
+        
 
         try:
 
