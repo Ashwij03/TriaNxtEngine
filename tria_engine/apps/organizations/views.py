@@ -23,12 +23,40 @@ class OrganizationListCreateAPI(APIView):
         if not request.user.is_superuser:
             return Response({"message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         serializer = OrganizationSerializer(data=request.data)
+        # if serializer.is_valid():
+        #     serializer.save()
+        #     return Response(serializer.data, status=status.HTTP_201_CREATED)
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+            organization = serializer.save()
+
+            # =====================================================
+            # DATABASE VALIDATION CHANGE:
+            # Verify organization inserted correctly.
+            # =====================================================
+
+            if not Organization.objects.filter(
+                id=organization.id
+            ).exists():
+
+                return Response(
+                    {
+                        "message": "Organization creation validation failed"
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            return Response(
+                OrganizationSerializer(
+                    organization
+                ).data,
+                status=status.HTTP_201_CREATED
+            )
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
 
-
+# role list and create API view 
 class RoleListCreateAPI(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -45,7 +73,31 @@ class RoleListCreateAPI(APIView):
         if not request.user.is_superuser:
             return Response({"message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         serializer = RoleSerializer(data=request.data)
+        # if serializer.is_valid():
+        #     serializer.save()
+        #     return Response(serializer.data, status=status.HTTP_201_CREATED)
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            role = serializer.save()
+            
+
+           # =====================================================
+           # DATABASE VALIDATION CHANGE:
+           # Verify role inserted correctly.
+           # =====================================================
+            if not Role.objects.filter(
+                id=role.id
+            ).exists():
+                return Response(
+                   {
+                       "message": "Role creation validation failed"
+                   },
+                   status=status.HTTP_500_INTERNAL_SERVER_ERROR
+               )
+            return Response(
+                RoleSerializer(
+                    role
+                ).data,
+                status=status.HTTP_201_CREATED
+            ) 
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
