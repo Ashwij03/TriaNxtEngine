@@ -771,9 +771,8 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
                 "document_number": (
                     document_number
                 ),
-                "file_name": (
-                    document.original_name
-                ),
+                # "file_name": (
+                #     document.original_name),
             },
         )
 
@@ -806,9 +805,29 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
             "to delete this document"
         )
 
+    # file_name = document.original_name
+
+    # document.delete()
+    
     file_name = document.original_name
 
+    # =====================================================
+    # DATABASE VALIDATION CHANGE:
+    # Hard delete validation
+    # Verify record is removed from database.
+    # =====================================================
+
+    document_id = document.id
+
     document.delete()
+
+    if UploadedDocument.objects.filter(
+        id=document_id
+    ).exists():
+
+        return None, (
+            "Document deletion validation failed"
+        )
 
     log_audit_event(
         "document_deleted",

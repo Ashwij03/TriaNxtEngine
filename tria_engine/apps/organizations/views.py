@@ -14,9 +14,36 @@ class OrganizationListCreateAPI(APIView):
         if request.user.is_superuser:
             organizations = Organization.objects.all()
         else:
-            organizations = Organization.objects.filter(id=request.user.organization_id)
-        serializer = OrganizationSerializer(organizations, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+            organizations = Organization.objects.filter(
+                id=request.user.organization_id
+            )
+            
+            
+        # =====================================================
+        # DATABASE VALIDATION CHANGE:
+        # Data Retrieval Validation
+        # Verify correct organization records returned.
+        # =====================================================
+        
+        if not organizations.exists():
+            
+            return Response(
+                {
+                    "message": "No organizations found"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+            
+            
+        serializer = OrganizationSerializer(
+            organizations, 
+            many=True
+        )
+        return Response(
+            serializer.data, 
+            status=status.HTTP_200_OK
+        )
 
     @swagger_auto_schema(request_body=OrganizationSerializer)
     def post(self, request):
@@ -38,6 +65,7 @@ class OrganizationListCreateAPI(APIView):
             if not Organization.objects.filter(
                 id=organization.id
             ).exists():
+            
 
                 return Response(
                     {
@@ -53,7 +81,10 @@ class OrganizationListCreateAPI(APIView):
                 status=status.HTTP_201_CREATED
             )
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            serializer.errors, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
     
 
 # role list and create API view 
@@ -61,12 +92,40 @@ class RoleListCreateAPI(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        
         if request.user.is_superuser:
-            roles = Role.objects.select_related("organization").all()
+            roles = Role.objects.select_related(
+                "organization"
+                ).all()
         else:
-            roles = Role.objects.select_related("organization").filter(organization=request.user.organization)
-        serializer = RoleSerializer(roles, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+            roles = Role.objects.select_related(
+                "organization"
+            ).filter(
+                organization=request.user.organization
+            )
+        # =====================================================
+        # DATABASE VALIDATION CHANGE:
+        # Data Retrieval Validation
+        # Verify correct role records returned.
+        # =====================================================
+        
+        if not roles.exists():
+            
+            return Response(
+                {
+                    "message": "No roles found"
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+        serializer = RoleSerializer(
+            roles,
+            many=True
+        )
+        return Response(
+            serializer.data, 
+            status=status.HTTP_200_OK
+        )
 
     @swagger_auto_schema(request_body=RoleSerializer)
     def post(self, request):
