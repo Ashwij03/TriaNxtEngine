@@ -1,4 +1,5 @@
 from datetime import timedelta
+from dbm import error
 from django.contrib.auth import login
 from django.http import FileResponse
 from django.utils import timezone
@@ -1390,7 +1391,7 @@ class DocumentUploadAPI(APIView):
                     status=400
                 )
 
-            document, error = upload_document(
+            document,error = upload_document(
                 user_id=user_id,
                 uploaded_file=uploaded_file,
                 uploaded_by=request.user,
@@ -1398,6 +1399,16 @@ class DocumentUploadAPI(APIView):
                 organization=request.user.organization,
                 request=request,
             )
+            # API VALIDATION CHANGE:
+            # Handle upload service errors before accessing document fields.
+            if error:
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+              
             create_audit_log(
                 user=request.user,
                 action="UPLOAD_DOCUMENT",
@@ -1749,73 +1760,6 @@ class ProfilePhotoDeleteAPI(APIView):
 
         return Response(result, status=200)
 
-
-    def post(self, request):
-    
-        try:
-        
-            serializer = UploadFormSerializer(
-                data=request.data
-            )
-    
-            # API VALIDATION CHANGE: Validate upload-form request schema.
-            schema_error, status_code = validate_api_request_schema(serializer)
-    
-            if schema_error:
-            
-                return Response(
-                    schema_error,
-                    status=status_code
-                )
-    
-            user_id = serializer.validated_data[
-                "user_id"
-            ]
-    
-            form_type = serializer.validated_data[
-                "form_type"
-            ]
-    
-            uploaded_file = serializer.validated_data[
-                "file"
-            ]
-    
-            form = upload_form_service(
-                user_id,
-                request.user,
-                uploaded_file,
-                form_type
-            )
-    
-            create_audit_log(
-                user=request.user,
-                action="UPLOAD_FORM",
-                ip_address=request.META.get('REMOTE_ADDR'),
-                description=f"{request.user.username} uploaded {form_type} form",
-                signature_meaning="Form upload electronically signed"
-            )
-    
-            return Response(
-                {
-                    "message": (
-                        f"{form_type} uploaded successfully"
-                    ),
-                    "form_id": form.id,
-                    "file": form.file.url,
-                },
-                status=201
-            )
-
-        except Exception:
-
-            # API VALIDATION CHANGE:
-            # Handle unexpected upload-form errors.
-            return Response(
-                {
-                    "message": "Internal Server Error"
-                },
-                status=500
-            )
 
 @method_decorator(csrf_exempt, name='dispatch')
 class UploadFormAPI(APIView):
