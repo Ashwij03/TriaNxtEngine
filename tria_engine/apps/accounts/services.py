@@ -44,6 +44,7 @@ def validate_rate_limit(
 
     return None, None
 
+
 # API VALIDATION CHANGE: Central endpoint availability validation for correct
 # method and headers. URL correctness is confirmed by Django before a view is
 # reached; this service validates the resolved endpoint request details.
