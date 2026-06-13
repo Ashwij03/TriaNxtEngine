@@ -1,3 +1,5 @@
+
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -56,12 +58,8 @@ class OrganizationListCreateAPI(APIView):
         if serializer.is_valid():
 
             organization = serializer.save()
-
-            # =====================================================
-            # DATABASE VALIDATION CHANGE:
-            # Verify organization inserted correctly.
-            # =====================================================
-
+            
+            
             if not Organization.objects.filter(
                 id=organization.id
             ).exists():
@@ -132,20 +130,16 @@ class RoleListCreateAPI(APIView):
         if not request.user.is_superuser:
             return Response({"message": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         serializer = RoleSerializer(data=request.data)
-        # if serializer.is_valid():
-        #     serializer.save()
-        #     return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
         if serializer.is_valid():
             role = serializer.save()
             
+            
 
-           # =====================================================
-           # DATABASE VALIDATION CHANGE:
-           # Verify role inserted correctly.
-           # =====================================================
             if not Role.objects.filter(
                 id=role.id
             ).exists():
+                
                 return Response(
                    {
                        "message": "Role creation validation failed"
