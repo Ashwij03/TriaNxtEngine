@@ -20,10 +20,10 @@ from drf_yasg import openapi
 from urllib3 import request
 
 from .serializers import (
-    UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
+    TokenTypeSerializer, UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer, VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
-    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer 
+    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer,
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
@@ -567,10 +567,6 @@ class VerifyLoginOTPAPI(APIView):
 
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
-        
-        print("LOGIN MFA HIT") ## testing , should remove
-
-        
         serializer = VerifyLoginOTPSerializer(data=request.data)
         # API VALIDATION CHANGE: Validate request schema before OTP verification.
         schema_error, status_code = validate_api_request_schema(serializer)
@@ -916,9 +912,23 @@ class CompromisedTokenReportAPI(APIView):
         ]
     )
     def post(self, request):
-        token_type = request.query_params.get("token_type")
-        if not token_type:
-            return Response({"message": "token_type is required"}, status=400)
+        serializer = TokenTypeSerializer(
+            data=request.query_params
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            serializer
+        )
+
+        if schema_error:
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        token_type = serializer.validated_data[
+            "token_type"
+        ]
 
         result, error = report_compromised_token(
             user=request.user,
@@ -1219,10 +1229,6 @@ class DocumentUploadAPI(APIView):
     )
     
     def post(self, request):
-        
-        print("DOCUMENT UPLOAD HIT")  #testing remove later      
-        print("USER:", request.user) #
-
         try:
 
             serializer = DocumentUploadSerializer(
