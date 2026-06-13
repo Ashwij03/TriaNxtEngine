@@ -334,6 +334,7 @@ def create_user(validated_data):
     user.set_password(validated_data["password"])
     _set_password_metadata(user)
     user.save()
+    
     password_changed(validated_data["password"], user=user)
     return user
 
