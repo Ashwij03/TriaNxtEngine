@@ -24,6 +24,26 @@ from .file_validators import (
 
 User = get_user_model()
 
+# =====================================================
+# API VALIDATION CHANGE:
+# Rate Limiting validation service
+# Checks request count against configured threshold.
+# =====================================================
+
+def validate_rate_limit(
+    current_request_count,
+    threshold,
+    retry_after_seconds
+):
+    if current_request_count > threshold:
+        return {
+            "message": "Rate limit exceeded",
+            "threshold": threshold,
+            "retry_after_seconds": retry_after_seconds,
+        }, 429
+
+    return None, None
+
 
 # API VALIDATION CHANGE: Central endpoint availability validation for correct
 # method and headers. URL correctness is confirmed by Django before a view is
@@ -314,6 +334,7 @@ def create_user(validated_data):
     user.set_password(validated_data["password"])
     _set_password_metadata(user)
     user.save()
+    
     password_changed(validated_data["password"], user=user)
     return user
 
@@ -751,9 +772,8 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
                 "document_number": (
                     document_number
                 ),
-                "file_name": (
-                    document.original_name
-                ),
+                # "file_name": (
+                #     document.original_name),
             },
         )
 
@@ -786,9 +806,29 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
             "to delete this document"
         )
 
+    # file_name = document.original_name
+
+    # document.delete()
+    
     file_name = document.original_name
 
+    # =====================================================
+    # DATABASE VALIDATION CHANGE:
+    # Hard delete validation
+    # Verify record is removed from database.
+    # =====================================================
+
+    document_id = document.id
+
     document.delete()
+
+    if UploadedDocument.objects.filter(
+        id=document_id
+    ).exists():
+
+        return None, (
+            "Document deletion validation failed"
+        )
 
     log_audit_event(
         "document_deleted",
