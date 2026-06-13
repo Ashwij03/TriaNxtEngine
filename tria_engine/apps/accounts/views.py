@@ -19,7 +19,7 @@ from drf_yasg import openapi
 from urllib3 import request
 
 from .serializers import (
-    UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
+    TokenTypeSerializer, UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer, VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
     ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer, SortingSerializer
@@ -933,9 +933,23 @@ class CompromisedTokenReportAPI(APIView):
         ]
     )
     def post(self, request):
-        token_type = request.query_params.get("token_type")
-        if not token_type:
-            return Response({"message": "token_type is required"}, status=400)
+        serializer = TokenTypeSerializer(
+            data=request.query_params
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            serializer
+        )
+
+        if schema_error:
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        token_type = serializer.validated_data[
+            "token_type"
+        ]
 
         result, error = report_compromised_token(
             user=request.user,

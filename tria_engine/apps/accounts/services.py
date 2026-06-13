@@ -564,7 +564,7 @@ def report_compromised_token(user, token_type, request=None):
         PasswordResetToken.objects.filter(user=user, is_used=False).update(is_used=True)
 
     user.must_change_password = True
-    user.save(update_fields=["updated_at"])
+    user.save(update_fields=["must_change_password", "updated_at"])
 
     log_audit_event(
         "compromised_token_reported",
