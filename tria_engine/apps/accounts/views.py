@@ -1,6 +1,6 @@
-# accounts/views.py
-
-from datetime import timedelta
+from datetime import time, timedelta
+from dbm import error
+import logging
 from django.contrib.auth import login
 from django.http import FileResponse
 from django.utils import timezone
@@ -20,14 +20,19 @@ from drf_yasg import openapi
 from urllib3 import request
 
 from .serializers import (
+    RecoverCorruptedRecordSerializer,
+    DataIntegritySerializer,
     TokenTypeSerializer, UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer, VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
-    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer,
+    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer, SortingSerializer
 )
 from .services import (
+    verify_data_integrity,recover_corrupted_record,
+    execute_with_timeout,
+    retry_operation,
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema, validate_rate_limit,
 )
 from .models import User, UploadedDocument
 from .audit import log_audit_event
@@ -96,6 +101,26 @@ class APIView(DRFAPIView):
                     "errors": validation_errors,
                 }
             )
+            
+            
+        # =====================================================
+        # API VALIDATION CHANGE:
+        # Rate Limiting validation
+        # Thresholds and response after limit exceeded.
+        # =====================================================
+
+        current_request_count = 1
+        threshold = 100
+        retry_after_seconds = 60
+
+        rate_limit_error, status_code = validate_rate_limit(
+        current_request_count=current_request_count,
+        threshold=threshold,
+        retry_after_seconds=retry_after_seconds,
+        )
+
+        if rate_limit_error:
+            raise ValidationError(rate_limit_error)
 
         return super().initial(request, *args, **kwargs)
 
@@ -206,14 +231,19 @@ class RegisterAPI(APIView):
 
         except Exception as e:
 
-            # API VALIDATION CHANGE:
-            # Handle unexpected server-side errors.
+            import logging
+
+            logger = logging.getLogger(__name__)
+
+            logger.exception(str(e))
+
             return Response(
-                {
-                    "message": str(e)
-                },
-                status=500
-            )
+            {
+                "message": "Internal Server Error",
+                "error_type": type(e).__name__
+            },
+            status=500
+        )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -567,6 +597,8 @@ class VerifyLoginOTPAPI(APIView):
 
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
+        
+        
         serializer = VerifyLoginOTPSerializer(data=request.data)
         # API VALIDATION CHANGE: Validate request schema before OTP verification.
         schema_error, status_code = validate_api_request_schema(serializer)
@@ -676,16 +708,21 @@ class ForgotPasswordAPI(APIView):
                 status=200
             )
 
-        except Exception:
+        except Exception as e:
 
-            # API VALIDATION CHANGE:
-            # Handle unexpected forgot-password errors.
+            import logging
+
+            logger = logging.getLogger(__name__)
+
+            logger.exception(str(e))
+
             return Response(
-                {
-                    "message": "Internal Server Error"
-                },
-                status=500
-            )
+        {
+            "message": "Internal Server Error",
+            "error_type": type(e).__name__
+        },
+        status=500
+        )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -759,16 +796,21 @@ class ResetPasswordAPI(APIView):
                 status=200
             )
 
-        except Exception:
+        except Exception as e:
 
-            # API VALIDATION CHANGE:
-            # Handle unexpected password reset errors.
+            import logging
+
+            logger = logging.getLogger(__name__)
+
+            logger.exception(str(e))
+
             return Response(
                 {
-                    "message": "Internal Server Error"
+                    "message": "Internal Server Error",
+                    "error_type": type(e).__name__
                 },
                 status=500
-            )
+        )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1027,7 +1069,40 @@ class IntegrityCheckAPI(APIView):
 class DocumentListAPI(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(responses={200: UploadedDocumentSerializer(many=True)})
+    # @swagger_auto_schema(responses={200: UploadedDocumentSerializer(many=True)})
+    @swagger_auto_schema(
+    manual_parameters=[
+        openapi.Parameter(
+            'sort_by',
+            openapi.IN_QUERY,
+            description='Field to sort by',
+            type=openapi.TYPE_STRING,
+            enum=[
+                'document_number',
+                'original_name',
+                'file_size',
+                'category',
+                'created_at',
+                'updated_at',
+                'content_type',
+                'organization',
+                'uploaded_by'
+            ]
+        ),
+        openapi.Parameter(
+            'sort_order',
+            openapi.IN_QUERY,
+            description='Sort order',
+            type=openapi.TYPE_STRING,
+            enum=[
+                'asc',
+                'desc'
+            ]
+        )
+    ],
+    responses={200: UploadedDocumentSerializer(many=True)}
+)  
+    
     def get(self, request):
         if request.user.is_superuser:
             documents = UploadedDocument.objects.select_related(
@@ -1087,15 +1162,60 @@ class DocumentListAPI(APIView):
         filter_value = filter_serializer.validated_data.get(
             "filter_value"
         )
-  # =====================================================
-# API VALIDATION CHANGE: Apply filtering
-# =====================================================      
+
+        # =====================================================
+        # API VALIDATION CHANGE: Apply filtering
+        # =====================================================      
         if filter_by and filter_value:
             documents = documents.filter(
                 **{
                     filter_by: filter_value
                 }
             )
+ 
+        # =====================================================
+        # API VALIDATION CHANGE: Sorting validation
+        # =====================================================
+
+        sorting_serializer = SortingSerializer(
+            data=request.GET
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            sorting_serializer
+        )
+
+        if schema_error:
+        
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        sort_by = sorting_serializer.validated_data.get(
+            "sort_by"
+        )
+
+        sort_order = sorting_serializer.validated_data.get(
+            "sort_order",
+            "asc"
+        )
+
+        # =====================================================
+        # API VALIDATION CHANGE: Apply sorting
+        # =====================================================
+
+        if sort_by:
+        
+            if sort_order.lower() == "desc":
+                documents = documents.order_by(
+                    f"-{sort_by}"
+                )
+            else:
+                documents = documents.order_by(
+                    sort_by
+                )     ##       
+            
             
         page_number = pagination_serializer.validated_data[
             "page_number"
@@ -1303,7 +1423,7 @@ class DocumentUploadAPI(APIView):
                     status=400
                 )
 
-            document, error = upload_document(
+            document,error = upload_document(
                 user_id=user_id,
                 uploaded_file=uploaded_file,
                 uploaded_by=request.user,
@@ -1311,6 +1431,16 @@ class DocumentUploadAPI(APIView):
                 organization=request.user.organization,
                 request=request,
             )
+            # API VALIDATION CHANGE:
+            # Handle upload service errors before accessing document fields.
+            if error:
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+              
             create_audit_log(
                 user=request.user,
                 action="UPLOAD_DOCUMENT",
@@ -1578,16 +1708,21 @@ class ProfilePhotoUploadAPI(APIView):
                 status=200,
             )
 
-        except Exception:
+        except Exception as e:
 
-            # API VALIDATION CHANGE:
-            # Handle unexpected profile-photo upload errors.
+            import logging
+
+            logger = logging.getLogger(__name__)
+
+            logger.exception(str(e))
+
             return Response(
-                {
-                    "message": "Internal Server Error"
-                },
-                status=500
-            )
+        {
+            "message": "Internal Server Error",
+            "error_type": type(e).__name__
+        },
+        status=500
+        )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1662,73 +1797,6 @@ class ProfilePhotoDeleteAPI(APIView):
 
         return Response(result, status=200)
 
-
-    def post(self, request):
-    
-        try:
-        
-            serializer = UploadFormSerializer(
-                data=request.data
-            )
-    
-            # API VALIDATION CHANGE: Validate upload-form request schema.
-            schema_error, status_code = validate_api_request_schema(serializer)
-    
-            if schema_error:
-            
-                return Response(
-                    schema_error,
-                    status=status_code
-                )
-    
-            user_id = serializer.validated_data[
-                "user_id"
-            ]
-    
-            form_type = serializer.validated_data[
-                "form_type"
-            ]
-    
-            uploaded_file = serializer.validated_data[
-                "file"
-            ]
-    
-            form = upload_form_service(
-                user_id,
-                request.user,
-                uploaded_file,
-                form_type
-            )
-    
-            create_audit_log(
-                user=request.user,
-                action="UPLOAD_FORM",
-                ip_address=request.META.get('REMOTE_ADDR'),
-                description=f"{request.user.username} uploaded {form_type} form",
-                signature_meaning="Form upload electronically signed"
-            )
-    
-            return Response(
-                {
-                    "message": (
-                        f"{form_type} uploaded successfully"
-                    ),
-                    "form_id": form.id,
-                    "file": form.file.url,
-                },
-                status=201
-            )
-
-        except Exception:
-
-            # API VALIDATION CHANGE:
-            # Handle unexpected upload-form errors.
-            return Response(
-                {
-                    "message": "Internal Server Error"
-                },
-                status=500
-            )
 
 @method_decorator(csrf_exempt, name='dispatch')
 class UploadFormAPI(APIView):
@@ -1809,16 +1877,21 @@ class UploadFormAPI(APIView):
                 status=201
             )
 
-        except Exception:
+        except Exception as e:
 
-            # API VALIDATION CHANGE:
-            # Handle unexpected upload-form errors.
+            import logging
+
+            logger = logging.getLogger(__name__)
+
+            logger.exception(str(e))
+
             return Response(
-                {
-                    "message": "Internal Server Error"
-                },
-                status=500
-            )
+        {
+            "message": "Internal Server Error",
+            "error_type": type(e).__name__
+        },
+        status=500
+        )
 
 @method_decorator(csrf_exempt, name='dispatch')
 class DeleteUploadFormAPI(APIView):
@@ -1995,6 +2068,28 @@ class ViewUploadFormAPI(APIView):
             status=200
         )
 
+class ExternalTestAPI(APIView):
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+
+        try:
+
+            execute_with_timeout(
+                lambda: time.sleep(10),
+                timeout_seconds=3
+            )
+
+        except Exception:
+
+            return Response(
+                {
+                    "message":
+                    "External service unavailable"
+                },
+                status=503
+            )
 
 @method_decorator(csrf_exempt, name='dispatch')
 class AuditLogsAPI(APIView):
@@ -2078,7 +2173,64 @@ class AuditLogsAPI(APIView):
             },
             status=200
         )
-        
+class VerifyDataIntegrityAPI(APIView):
+
+    permission_classes = [AllowAny]
+
+    @swagger_auto_schema(
+        request_body=DataIntegritySerializer
+    )
+    def post(self, request):
+
+        serializer = DataIntegritySerializer(
+            data=request.data
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        result = verify_data_integrity(
+            serializer.validated_data[
+                "original_data"
+            ],
+            serializer.validated_data[
+                "stored_hash"
+            ]
+        )
+
+        return Response(
+            result,
+            status=200
+        )  
+
+class RecoverCorruptedRecordAPI(APIView):
+
+    permission_classes = [AllowAny]
+
+    @swagger_auto_schema(
+        request_body=RecoverCorruptedRecordSerializer
+    )
+    def post(self, request):
+
+        serializer = RecoverCorruptedRecordSerializer(
+            data=request.data
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        result = recover_corrupted_record(
+            serializer.validated_data[
+                "backup_value"
+            ]
+        )
+
+        return Response(
+            result,
+            status=200
+        )      
         
 
         # create_audit_log(

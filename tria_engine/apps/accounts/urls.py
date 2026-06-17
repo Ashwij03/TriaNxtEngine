@@ -4,10 +4,13 @@ from django.urls import path
 from django.conf import settings
 from django.conf.urls.static import static
 from .views import (
+    ExternalTestAPI,
+    RecoverCorruptedRecordAPI,
     UserListAPI,
     RegisterAPI,
     LoginAPI,
     LoginMFAAPI,
+    VerifyDataIntegrityAPI,
     VerifyLoginOTPAPI,
     ForgotPasswordAPI,
     ResetPasswordAPI,
@@ -30,6 +33,18 @@ from .views import (
 
 urlpatterns = [
     
+    path(
+        "verify-data-integrity/",
+        VerifyDataIntegrityAPI.as_view(),
+        name="verify-data-integrity"
+    ),
+
+    path(
+        "recover-corrupted-record/",
+        RecoverCorruptedRecordAPI.as_view(),
+        name="recover-corrupted-record"
+    ),
+
     path(
         "users/",
         UserListAPI.as_view(),
@@ -167,6 +182,11 @@ urlpatterns = [
         AuditLogsAPI.as_view(),
         name="audit-logs-api"
     ),
+    path(
+        "external-test/",
+        ExternalTestAPI.as_view(),
+        name="external-test"
+),
 
 ]
 

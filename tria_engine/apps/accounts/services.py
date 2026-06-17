@@ -2,15 +2,20 @@ import secrets
 # import random
 import hashlib
 from datetime import timedelta
+import time
+import json
+from django.core import serializers as django_serializers
+from django.core.serializers import deserialize
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import password_changed, validate_password
+from  django.db import transaction
 from django.utils import timezone
 from django.contrib.auth import authenticate, login
 
 from .audit import log_audit_event
-from .models import PasswordResetToken, LoginOTP, UploadedDocument, AuditLog, UploadForm, UploadLog
+from .models import BatchProcess, PasswordResetToken, LoginOTP, UploadedDocument, AuditLog, UploadForm, UploadLog
 from .upload_config import (
     get_document_max_size,
     get_document_allowed_extensions,
@@ -23,6 +28,26 @@ from .file_validators import (
 )
 
 User = get_user_model()
+
+# =====================================================
+# API VALIDATION CHANGE:
+# Rate Limiting validation service
+# Checks request count against configured threshold.
+# =====================================================
+
+def validate_rate_limit(
+    current_request_count,
+    threshold,
+    retry_after_seconds
+):
+    if current_request_count > threshold:
+        return {
+            "message": "Rate limit exceeded",
+            "threshold": threshold,
+            "retry_after_seconds": retry_after_seconds,
+        }, 429
+
+    return None, None
 
 
 # API VALIDATION CHANGE: Central endpoint availability validation for correct
@@ -293,6 +318,8 @@ def _build_login_response(user, otp):
 # single dict argument, so those extra positional params caused a TypeError on every
 # registration attempt. The uniqueness checks inside now correctly read from
 # validated_data instead of the (now-removed) bare local variables.
+
+@transaction.atomic
 def create_user(validated_data):
 
     if User.objects.filter(email=validated_data["email"]).exists():
@@ -314,6 +341,7 @@ def create_user(validated_data):
     user.set_password(validated_data["password"])
     _set_password_metadata(user)
     user.save()
+    
     password_changed(validated_data["password"], user=user)
     return user
 
@@ -563,6 +591,29 @@ def report_compromised_token(user, token_type, request=None):
 # =========================================================
 # Integrity / Audit Services
 # =========================================================
+from django.core import serializers
+import json
+
+def create_backup_service():
+
+    users = User.objects.all()
+
+    data = serializers.serialize(
+        "json",
+        users
+    )
+
+    with open(
+        "backup_users.json",
+        "w"
+    ) as backup_file:
+
+        backup_file.write(data)
+
+    return {
+        "message":
+        "Backup created successfully"
+    }
 
 
 def create_audit_log(
@@ -630,7 +681,7 @@ def integrity_check_service(message):
 # Document Services
 # =========================================================
 
-
+@transaction.atomic
 def upload_document(*, user_id, uploaded_file, uploaded_by, category="general", organization=None, request=None):
 
     validate_file_size(
@@ -751,9 +802,8 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
                 "document_number": (
                     document_number
                 ),
-                "file_name": (
-                    document.original_name
-                ),
+                # "file_name": (
+                #     document.original_name),
             },
         )
 
@@ -786,9 +836,29 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
             "to delete this document"
         )
 
+    # file_name = document.original_name
+
+    # document.delete()
+    
     file_name = document.original_name
 
+    # =====================================================
+    # DATABASE VALIDATION CHANGE:
+    # Hard delete validation
+    # Verify record is removed from database.
+    # =====================================================
+
+    document_id = document.id
+
     document.delete()
+
+    if UploadedDocument.objects.filter(
+        id=document_id
+    ).exists():
+
+        return None, (
+            "Document deletion validation failed"
+        )
 
     log_audit_event(
         "document_deleted",
@@ -873,7 +943,7 @@ def delete_profile_photo(*, user, request=None):
 # =========================================================
 # Upload Form Services
 # =========================================================
-
+@transaction.atomic
 def upload_form_service(
     user_id,
     user,
@@ -881,36 +951,44 @@ def upload_form_service(
     form_type
 ):
 
-    validate_form_file(
-        uploaded_file
-    )
+    try:
 
-    form = UploadForm.objects.create(
-        user=user,
-        form_type=form_type,
-        file=uploaded_file,
-    )
+        validate_form_file(
+            uploaded_file
+        )
 
-    UploadLog.objects.create(
-        user=user,
-        file_name=uploaded_file.name,
-        action="FORM_UPLOAD",
-    )
+        form = UploadForm.objects.create(
+            user=user,
+            form_type=form_type,
+            file=uploaded_file,
+        )
 
-    log_audit_event(
-        "form_uploaded",
-        user=user,
-        status="success",
-        details={
-            "user_id": user_id,
-            "form_type": form_type,
-            "file": uploaded_file.name,
-        }
-    )
+        UploadLog.objects.create(
+            user=user,
+            file_name=uploaded_file.name,
+            action="FORM_UPLOAD",
+        )
 
-    return form
+        log_audit_event(
+            "form_uploaded",
+            user=user,
+            status="success",
+            details={
+                "user_id": user_id,
+                "form_type": form_type,
+                "file": uploaded_file.name,
+            }
+        )
 
+        return form
 
+    except Exception:
+
+        transaction.set_rollback(True)
+
+        raise
+
+@transaction.atomic
 def delete_uploaded_form_service(
     user_id,
     form_id,
@@ -1062,3 +1140,232 @@ def get_uploaded_form_service(
             )
         ),
     }, None
+    
+import signal
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException(
+        "Operation timed out"
+    )
+
+def execute_with_timeout(
+    operation,
+    timeout_seconds=5
+):
+
+    signal.signal(
+        signal.SIGALRM,
+        timeout_handler
+    )
+
+    signal.alarm(timeout_seconds)
+
+    try:
+
+        return operation()
+
+    finally:
+
+        signal.alarm(0)
+        
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def retry_operation(
+    operation,
+    retries=3,
+    delay=1
+):
+
+    last_exception = None
+
+    for attempt in range(retries):
+
+        try:
+
+            return operation()
+
+        except Exception as e:
+
+            last_exception = e
+
+            logger.warning(
+                f"Retry attempt "
+                f"{attempt+1} failed"
+            )
+
+            if attempt == retries - 1:
+
+                logger.error(
+                    "All retry attempts failed"
+                )
+
+                raise
+
+            time.sleep(delay)
+
+    raise last_exception
+
+# =====================================================
+# DISASTER RECOVERY VALIDATION
+# Backup and Restore
+# =====================================================
+
+def create_backup_service():
+
+    users = User.objects.all()
+
+    data = django_serializers.serialize(
+        "json",
+        users
+    )
+
+    with open(
+        "backup_users.json",
+        "w"
+    ) as backup_file:
+
+        backup_file.write(data)
+
+    return {
+        "message":
+        "Backup created successfully"
+    }
+
+
+def restore_backup_service():
+
+    with open(
+        "backup_users.json",
+        "r"
+    ) as backup_file:
+
+        data = backup_file.read()
+
+    for obj in deserialize(
+        "json",
+        data
+    ):
+        obj.save()
+
+    return {
+        "message":
+        "Backup restored successfully"
+    }
+    
+# =====================================================
+# DATA CORRUPTION HANDLING VALIDATION
+# =====================================================
+
+def verify_data_integrity(
+    original_data,
+    stored_hash
+):
+
+    current_hash = hashlib.sha256(
+        original_data.strip().encode("utf-8")
+    ).hexdigest()
+
+    return {
+        "status": (
+            "valid"
+            if current_hash == stored_hash.strip().lower()
+            else "corrupted"
+        ),
+        "generated_hash": current_hash
+    }
+
+
+def recover_corrupted_record(
+    backup_value
+):
+
+    return {
+        "message": "Data restored",
+        "data": backup_value
+    }  
+ 
+# =====================================================
+# FAILED BATCH RECOVERY VALIDATION
+# =====================================================
+
+def process_record(record):
+    """
+    Process a single record in the batch.
+    
+    Args:
+        record: The record to process (dict or object)
+    
+    Raises:
+        ValueError: If record is None or invalid
+        Exception: If processing fails
+    """
+    try:
+        # Validate that record is not empty
+        if record is None:
+            raise ValueError("Record cannot be None")
+        
+        # Log the record being processed
+        record_id = (
+            record.get('id') if isinstance(record, dict) 
+            else (getattr(record, 'id', None) if hasattr(record, 'id') else 'unknown')
+        )
+        logger.info(f"Processing record: {record_id}")
+        
+        # Add your business logic here
+        # Examples:
+        # - Validate record data
+        # - Transform record data
+        # - Save to database
+        # - Call external API
+        # - etc.
+        
+        # For now, just ensure record exists and is valid
+        if isinstance(record, dict):
+            if not record:
+                raise ValueError("Record dict cannot be empty")
+        
+        logger.debug(f"Record {record_id} processed successfully")
+        
+    except Exception as e:
+        logger.exception(f"Error processing record: {str(e)}")
+        raise
+
+def process_batch(
+    records,
+    batch_name
+):
+
+    batch, _ = BatchProcess.objects.get_or_create(
+        batch_name=batch_name
+    )
+
+    start_index = (
+        batch.last_successful_record
+    )
+
+    for index in range(
+        start_index,
+        len(records)
+    ):
+
+        process_record(
+            records[index]
+        )
+
+        batch.last_successful_record = (
+            index + 1
+        )
+
+        batch.save()
+
+    return {
+        "message":
+        "Batch completed"
+    }
+    
+    
