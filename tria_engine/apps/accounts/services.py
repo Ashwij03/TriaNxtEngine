@@ -2,15 +2,20 @@ import secrets
 # import random
 import hashlib
 from datetime import timedelta
+import time
+import json
+from django.core import serializers as django_serializers
+from django.core.serializers import deserialize
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import password_changed, validate_password
+from  django.db import transaction
 from django.utils import timezone
 from django.contrib.auth import authenticate, login
 
 from .audit import log_audit_event
-from .models import PasswordResetToken, LoginOTP, UploadedDocument, AuditLog, UploadForm, UploadLog
+from .models import BatchProcess, PasswordResetToken, LoginOTP, UploadedDocument, AuditLog, UploadForm, UploadLog
 from .upload_config import (
     get_document_max_size,
     get_document_allowed_extensions,
@@ -313,6 +318,8 @@ def _build_login_response(user, otp):
 # single dict argument, so those extra positional params caused a TypeError on every
 # registration attempt. The uniqueness checks inside now correctly read from
 # validated_data instead of the (now-removed) bare local variables.
+
+@transaction.atomic
 def create_user(validated_data):
 
     if User.objects.filter(email=validated_data["email"]).exists():
@@ -584,6 +591,29 @@ def report_compromised_token(user, token_type, request=None):
 # =========================================================
 # Integrity / Audit Services
 # =========================================================
+from django.core import serializers
+import json
+
+def create_backup_service():
+
+    users = User.objects.all()
+
+    data = serializers.serialize(
+        "json",
+        users
+    )
+
+    with open(
+        "backup_users.json",
+        "w"
+    ) as backup_file:
+
+        backup_file.write(data)
+
+    return {
+        "message":
+        "Backup created successfully"
+    }
 
 
 def create_audit_log(
@@ -651,7 +681,7 @@ def integrity_check_service(message):
 # Document Services
 # =========================================================
 
-
+@transaction.atomic
 def upload_document(*, user_id, uploaded_file, uploaded_by, category="general", organization=None, request=None):
 
     validate_file_size(
@@ -913,7 +943,7 @@ def delete_profile_photo(*, user, request=None):
 # =========================================================
 # Upload Form Services
 # =========================================================
-
+@transaction.atomic
 def upload_form_service(
     user_id,
     user,
@@ -921,36 +951,44 @@ def upload_form_service(
     form_type
 ):
 
-    validate_form_file(
-        uploaded_file
-    )
+    try:
 
-    form = UploadForm.objects.create(
-        user=user,
-        form_type=form_type,
-        file=uploaded_file,
-    )
+        validate_form_file(
+            uploaded_file
+        )
 
-    UploadLog.objects.create(
-        user=user,
-        file_name=uploaded_file.name,
-        action="FORM_UPLOAD",
-    )
+        form = UploadForm.objects.create(
+            user=user,
+            form_type=form_type,
+            file=uploaded_file,
+        )
 
-    log_audit_event(
-        "form_uploaded",
-        user=user,
-        status="success",
-        details={
-            "user_id": user_id,
-            "form_type": form_type,
-            "file": uploaded_file.name,
-        }
-    )
+        UploadLog.objects.create(
+            user=user,
+            file_name=uploaded_file.name,
+            action="FORM_UPLOAD",
+        )
 
-    return form
+        log_audit_event(
+            "form_uploaded",
+            user=user,
+            status="success",
+            details={
+                "user_id": user_id,
+                "form_type": form_type,
+                "file": uploaded_file.name,
+            }
+        )
 
+        return form
 
+    except Exception:
+
+        transaction.set_rollback(True)
+
+        raise
+
+@transaction.atomic
 def delete_uploaded_form_service(
     user_id,
     form_id,

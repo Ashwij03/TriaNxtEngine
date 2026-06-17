@@ -40,7 +40,7 @@ def validate_special_characters(value):
                 "Input contains prohibited characters or patterns."
             )
 
-        return value
+    return value
 
 # ==========================================
 # END SPECIAL CHARACTER VALIDATION
@@ -1034,3 +1034,13 @@ class AuditLogSerializer(serializers.ModelSerializer):
         return str(
             obj.signature_token
         )
+
+class TokenTypeSerializer(serializers.Serializer):
+
+    token_type = serializers.ChoiceField(
+        choices=[
+            "login_otp",
+            "password_reset"
+        ],
+        required=True
+    )
