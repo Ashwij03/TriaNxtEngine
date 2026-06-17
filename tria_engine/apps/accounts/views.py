@@ -1,6 +1,6 @@
-from datetime import time, timedelta
-from dbm import error
-import logging
+# accounts/views.py
+
+from datetime import timedelta
 from django.contrib.auth import login
 from django.http import FileResponse
 from django.utils import timezone
@@ -32,7 +32,7 @@ from .services import (
     execute_with_timeout,
     retry_operation,
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema, validate_rate_limit,
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema
 )
 from .models import User, UploadedDocument
 from .audit import log_audit_event
@@ -1349,6 +1349,9 @@ class DocumentUploadAPI(APIView):
     )
     
     def post(self, request):
+        
+        
+
         try:
 
             serializer = DocumentUploadSerializer(

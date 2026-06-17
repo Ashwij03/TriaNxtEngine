@@ -1044,22 +1044,3 @@ class TokenTypeSerializer(serializers.Serializer):
         ],
         required=True
     )
-class DataIntegritySerializer(
-    serializers.Serializer
-):
-
-    original_data = serializers.CharField(
-        required=True
-    )
-
-    stored_hash = serializers.CharField(
-        required=True
-    )
-
-class RecoverCorruptedRecordSerializer(
-    serializers.Serializer
-):
-
-    backup_value = serializers.CharField(
-        required=True
-    )
