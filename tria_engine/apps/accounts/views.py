@@ -1,6 +1,5 @@
-# accounts/views.py
-
 from datetime import timedelta
+from dbm import error
 from django.contrib.auth import login
 from django.http import FileResponse
 from django.utils import timezone
@@ -20,19 +19,14 @@ from drf_yasg import openapi
 from urllib3 import request
 
 from .serializers import (
-    RecoverCorruptedRecordSerializer,
-    DataIntegritySerializer,
     TokenTypeSerializer, UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer, VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
     ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer, SortingSerializer
 )
 from .services import (
-    verify_data_integrity,recover_corrupted_record,
-    execute_with_timeout,
-    retry_operation,
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema, validate_rate_limit
 )
 from .models import User, UploadedDocument
 from .audit import log_audit_event
@@ -231,19 +225,14 @@ class RegisterAPI(APIView):
 
         except Exception as e:
 
-            import logging
-
-            logger = logging.getLogger(__name__)
-
-            logger.exception(str(e))
-
+            # API VALIDATION CHANGE:
+            # Handle unexpected server-side errors.
             return Response(
-            {
-                "message": "Internal Server Error",
-                "error_type": type(e).__name__
-            },
-            status=500
-        )
+                {
+                    "message": str(e)
+                },
+                status=500
+            )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -708,21 +697,16 @@ class ForgotPasswordAPI(APIView):
                 status=200
             )
 
-        except Exception as e:
+        except Exception:
 
-            import logging
-
-            logger = logging.getLogger(__name__)
-
-            logger.exception(str(e))
-
+            # API VALIDATION CHANGE:
+            # Handle unexpected forgot-password errors.
             return Response(
-        {
-            "message": "Internal Server Error",
-            "error_type": type(e).__name__
-        },
-        status=500
-        )
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -796,21 +780,16 @@ class ResetPasswordAPI(APIView):
                 status=200
             )
 
-        except Exception as e:
+        except Exception:
 
-            import logging
-
-            logger = logging.getLogger(__name__)
-
-            logger.exception(str(e))
-
+            # API VALIDATION CHANGE:
+            # Handle unexpected password reset errors.
             return Response(
                 {
-                    "message": "Internal Server Error",
-                    "error_type": type(e).__name__
+                    "message": "Internal Server Error"
                 },
                 status=500
-        )
+            )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1711,21 +1690,16 @@ class ProfilePhotoUploadAPI(APIView):
                 status=200,
             )
 
-        except Exception as e:
+        except Exception:
 
-            import logging
-
-            logger = logging.getLogger(__name__)
-
-            logger.exception(str(e))
-
+            # API VALIDATION CHANGE:
+            # Handle unexpected profile-photo upload errors.
             return Response(
-        {
-            "message": "Internal Server Error",
-            "error_type": type(e).__name__
-        },
-        status=500
-        )
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1880,21 +1854,16 @@ class UploadFormAPI(APIView):
                 status=201
             )
 
-        except Exception as e:
+        except Exception:
 
-            import logging
-
-            logger = logging.getLogger(__name__)
-
-            logger.exception(str(e))
-
+            # API VALIDATION CHANGE:
+            # Handle unexpected upload-form errors.
             return Response(
-        {
-            "message": "Internal Server Error",
-            "error_type": type(e).__name__
-        },
-        status=500
-        )
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
 
 @method_decorator(csrf_exempt, name='dispatch')
 class DeleteUploadFormAPI(APIView):
@@ -2071,28 +2040,6 @@ class ViewUploadFormAPI(APIView):
             status=200
         )
 
-class ExternalTestAPI(APIView):
-
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-
-        try:
-
-            execute_with_timeout(
-                lambda: time.sleep(10),
-                timeout_seconds=3
-            )
-
-        except Exception:
-
-            return Response(
-                {
-                    "message":
-                    "External service unavailable"
-                },
-                status=503
-            )
 
 @method_decorator(csrf_exempt, name='dispatch')
 class AuditLogsAPI(APIView):
@@ -2176,64 +2123,7 @@ class AuditLogsAPI(APIView):
             },
             status=200
         )
-class VerifyDataIntegrityAPI(APIView):
-
-    permission_classes = [AllowAny]
-
-    @swagger_auto_schema(
-        request_body=DataIntegritySerializer
-    )
-    def post(self, request):
-
-        serializer = DataIntegritySerializer(
-            data=request.data
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        result = verify_data_integrity(
-            serializer.validated_data[
-                "original_data"
-            ],
-            serializer.validated_data[
-                "stored_hash"
-            ]
-        )
-
-        return Response(
-            result,
-            status=200
-        )  
-
-class RecoverCorruptedRecordAPI(APIView):
-
-    permission_classes = [AllowAny]
-
-    @swagger_auto_schema(
-        request_body=RecoverCorruptedRecordSerializer
-    )
-    def post(self, request):
-
-        serializer = RecoverCorruptedRecordSerializer(
-            data=request.data
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        result = recover_corrupted_record(
-            serializer.validated_data[
-                "backup_value"
-            ]
-        )
-
-        return Response(
-            result,
-            status=200
-        )      
+        
         
 
         # create_audit_log(
