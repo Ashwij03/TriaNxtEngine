@@ -1,50 +1,10 @@
-import re
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from tria_engine.apps.organizations.models import Organization
 from .models import  UploadedDocument, UploadForm, AuditLog
-import tria_engine.apps.organizations.models
+from tria_engine.apps.organizations.models import Role
 
 User = get_user_model()
-
-# ==========================================
-# SPECIAL CHARACTER VALIDATION
-# ==========================================
-
-FORBIDDEN_PATTERNS = [
-    r"<script.*?>.*?</script>",
-    r"javascript:",
-    r"onerror\s*=",
-    r"onload\s*=",
-    r"union\s+select",
-    r"drop\s+table",
-    r"delete\s+from",
-    r"insert\s+into",
-    r"update\s+.*set",
-    r"--"
-]
-
-def validate_special_characters(value):
-
-    if not isinstance(value, str):
-        return value
-
-    for pattern in FORBIDDEN_PATTERNS:
-
-        if re.search(
-            pattern,
-            value,
-            flags=re.IGNORECASE
-        ):
-            raise serializers.ValidationError(
-                "Input contains prohibited characters or patterns."
-            )
-
-        return value
-
-# ==========================================
-# END SPECIAL CHARACTER VALIDATION
-# ==========================================
 
 
 # API VALIDATION CHANGE: Serializer used by the service layer to validate endpoint
@@ -193,11 +153,8 @@ class RequestSchemaValidationMixin:
 
         for field_name in self.get_request_schema()["required_fields"]:
             value = data.get(field_name)
-            # Treat None, empty string, or blank-only strings as missing required fields
-            if value is None:
-                errors[field_name] = f"{field_name} cannot be null"
-            elif isinstance(value, str) and value.strip() == "":
-                errors[field_name] = f"{field_name} cannot be empty"
+            if value in [None, ""]:
+                errors[field_name] = f"{field_name} is required"
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -277,8 +234,6 @@ class FilterSerializer(
             })
 
         return data  
-    def validate_filter_value(self, value):
-        return validate_special_characters(value)
 
 # =====================================================
 # API VALIDATION CHANGE:
@@ -522,10 +477,11 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
         required=True
     )
     role = serializers.PrimaryKeyRelatedField(
-        queryset=tria_engine.apps.organizations.models.Role.objects.all(),
+        queryset=Role.objects.all(),
         required=True
     )
     
+
     # API VALIDATION CHANGE:
     # Duplicate email detected.
     # API should return HTTP 409 Conflict.
@@ -537,24 +493,8 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
         return value
 
     def validate_username(self, value):
-
-        value = validate_special_characters(value)
-
-        if not re.match(
-            r'^[a-zA-Z0-9_]+$',
-            value
-        ):
-            raise serializers.ValidationError(
-                "Username may contain only letters, numbers and underscore"
-            )
-
-        if User.objects.filter(
-            username__iexact=value
-        ).exists():
-            raise serializers.ValidationError(
-                "This username is already taken."
-            )
-
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("This username is already taken.")
         return value
 
     def validate(self, data):
@@ -581,60 +521,17 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
         validated_data.pop("confirm_password")
         return create_user(validated_data)
     
-    def validate_password(self, value):
-
-       if not re.search(r'[A-Z]', value):
-           raise serializers.ValidationError(
-               "Password must contain at least one uppercase letter"
-           )
-
-       if not re.search(r'[a-z]', value):
-           raise serializers.ValidationError(
-               "Password must contain at least one lowercase letter"
-           )
-
-       if not re.search(r'[0-9]', value):
-           raise serializers.ValidationError(
-               "Password must contain at least one number"
-           )
-
-       return value
-    def validate_first_name(self, value):
-
-        return validate_special_characters(value)
-
-
-    def validate_last_name(self, value):
-
-        return validate_special_characters(value)
-
-
-
-        value = validate_special_characters(value)
-        if not re.match(r'^[a-zA-Z0-9_]+$', value):
-            raise serializers.ValidationError(
-                "Username may contain only letters, numbers and underscore"
-            )
-
-        return value
 
 class LoginSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(
-    required=True,
-    allow_null=False,
     max_length=100
 )
 
     password = serializers.CharField(
-        required=True,
-        allow_blank=False,
-        allow_null=False,
+        write_only=True,
         min_length=8,
-        max_length=50,
-        write_only=True
+        max_length=50
     )
-    def validate_email(self, value):
-            return validate_special_characters(value)
     
     
 class LoginMFASerializer(RequestSchemaValidationMixin, serializers.Serializer):
@@ -673,9 +570,7 @@ class VerifyLoginOTPSerializer(RequestSchemaValidationMixin, serializers.Seriali
 
 
 class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(required=True,allow_null=False)
-    def validate_email(self, value):
-        return validate_special_characters(value)
+    email = serializers.EmailField()
 
 # FIX: Replaced `user_id` (IntegerField) with `email` (EmailField). The `ResetPasswordAPI`
 # view now passes `email` (obtained from the forgot-password response) to
@@ -683,21 +578,18 @@ class ForgotPasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
 # the need for the caller to track an internal user_id and makes the API consistent
 # with every other password-related endpoint that identifies users by email.
 class ResetPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(
-        required=True,
-        allow_null=False
+    email = serializers.EmailField( 
+        required=True
     )
-
+    
     otp_code = serializers.CharField(
-        min_length=6,
-        max_length=6,
-        allow_blank=False
+    min_length=6,
+    max_length=6
     )
 
     new_password = serializers.CharField(
         min_length=8,
         max_length=50,
-        allow_blank=False,
         write_only=True
     )
 
@@ -721,51 +613,27 @@ class ResetPasswordSerializer(RequestSchemaValidationMixin, serializers.Serializ
             )
 
         return value
-    
-    def validate_password(self, value):
-
-        if not re.search(r'[A-Z]', value):
-            raise serializers.ValidationError(
-                "Password must contain at least one uppercase letter"
-            )
-    
-        if not re.search(r'[a-z]', value):
-            raise serializers.ValidationError(
-                "Password must contain at least one lowercase letter"
-            )
-    
-        if not re.search(r'[0-9]', value):
-            raise serializers.ValidationError(
-                "Password must contain at least one number"
-            )
-    
-        return value
 
 
 class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
-    email = serializers.EmailField(
-        required=True,
-        allow_null=False
-    )
-
+    email = serializers.EmailField(required=True)
+    # username = serializers.CharField(required=False)
     current_password = serializers.CharField(
-        allow_blank=False,
-        min_length=8,
-        max_length=50
+    min_length=8,
+    max_length=50,
+    write_only=True
     )
-
     new_password = serializers.CharField(
-        allow_blank=False,
-        min_length=8,
-        max_length=50
+    min_length=8,
+    max_length=50,
+    write_only=True
     )
 
     confirm_password = serializers.CharField(
-        allow_blank=False,
-        min_length=8,
-        max_length=50
+    min_length=8,
+    max_length=50,
+    write_only=True
     )
-    
     def validate(self, data):
         # API VALIDATION CHANGE: Validate request schema before password rules.
         self.validate_request_schema(data)
@@ -779,41 +647,22 @@ class ChangePasswordSerializer(RequestSchemaValidationMixin, serializers.Seriali
                 "New password must be different from current password")
 
         return data
-    
-    def validate_password(self, value):
-
-        if not re.search(r'[A-Z]', value):
-            raise serializers.ValidationError(
-                "Password must contain at least one uppercase   letter"
-            )
-
-        if not re.search(r'[a-z]', value):
-            raise serializers.ValidationError(
-                "Password must contain at least one lowercase   letter"
-            )
-
-        if not re.search(r'[0-9]', value):
-            raise serializers.ValidationError(
-                "Password must contain at least one number"
-            )
-
-        return value
-    def validate_email(self, value):
-        return validate_special_characters(value)
 
 class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
+    
+    def validate(self, data):
+        # API VALIDATION CHANGE: Validate required upload fields and data types.
+        self.validate_request_schema(data)
+        return data
 
     user_id = serializers.IntegerField(
         min_value=1,
         max_value=99999999
     )
 
-    uploaded_by = serializers.CharField(
-    required=True,
-    allow_blank=False,
-    allow_null=False,
-    max_length=100
-)
+    uploaded_by = serializers.EmailField(
+        required=True
+    )
 
     file = serializers.FileField()
 
@@ -823,25 +672,6 @@ class DocumentUploadSerializer(RequestSchemaValidationMixin, serializers.Seriali
         default="general",
     )
 
-    def validate_uploaded_by(self, value):
-
-        value = validate_special_characters(value)
-
-        try:
-            serializers.EmailField().run_validation(value)
-
-        except serializers.ValidationError:
-            raise serializers.ValidationError(
-                "Enter a valid email address."
-            )
-
-        return value
-
-    def validate(self, data):
-
-        self.validate_request_schema(data)
-
-        return data
 
 class UploadedDocumentSerializer(serializers.ModelSerializer):
     organization = serializers.SerializerMethodField()
@@ -868,23 +698,10 @@ class UploadedDocumentSerializer(serializers.ModelSerializer):
         return None
 
 
-class UploadFormSerializer(
-    RequestSchemaValidationMixin,
-    serializers.ModelSerializer
-):
+class UploadFormSerializer(RequestSchemaValidationMixin, serializers.ModelSerializer):
 
     user_id = serializers.IntegerField(
-        required=True,
-        min_value=1,
-        max_value=99999999
-    )
-
-    form_type = serializers.CharField(
-        required=True,
-        min_length=2,
-        max_length=100,
-        allow_blank=False,
-        allow_null=False
+        required=True
     )
 
     class Meta:
@@ -894,44 +711,15 @@ class UploadFormSerializer(
         fields = [
             "user_id",
             "form_type",
-            "file"
+            "file",
         ]
 
-    def validate_form_type(self, value):
-
-        value = validate_special_characters(value)
-
-        if value is None:
-            raise serializers.ValidationError(
-                "form_type cannot be null"
-            )
-
-        if value.strip() == "":
-            raise serializers.ValidationError(
-                "form_type cannot be blank"
-            )
-
-        return value
-
-    def validate_file(self, value):
-
-        if value is None:
-            raise serializers.ValidationError(
-                "File cannot be null"
-            )
-
-        if value.size == 0:
-            raise serializers.ValidationError(
-                "Empty file is not allowed"
-            )
-
-        return value
-
     def validate(self, data):
-
+        # API VALIDATION CHANGE: Validate only fields declared by UploadFormSerializer.
         self.validate_request_schema(data)
-
         return data
+
+
 class DeleteUploadFormSerializer(
     RequestSchemaValidationMixin,
     serializers.Serializer
@@ -961,8 +749,6 @@ class ViewUploadFormSerializer(
 
 class IntegritySerializer(RequestSchemaValidationMixin, serializers.Serializer):
     message = serializers.CharField()
-    def validate_message(self, value):
-        return validate_special_characters(value)
 
 
 class ProfilePhotoUploadSerializer(RequestSchemaValidationMixin, serializers.Serializer):
