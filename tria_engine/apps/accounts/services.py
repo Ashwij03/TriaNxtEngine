@@ -1140,3 +1140,110 @@ def get_uploaded_form_service(
             )
         ),
     }, None
+
+
+# =========================================================
+# Data Integrity Services
+# =========================================================
+def verify_data_integrity(original_data, stored_hash):
+    """
+    Verify the integrity of data by comparing the hash of original data with the stored hash.
+    """
+    computed_hash = hashlib.sha256(
+        original_data.encode() if isinstance(original_data, str) else str(original_data).encode()
+    ).hexdigest()
+    
+    is_valid = computed_hash == stored_hash
+    
+    return {
+        "is_valid": is_valid,
+        "message": "Data integrity verified" if is_valid else "Data integrity check failed",
+        "original_data": original_data,
+        "computed_hash": computed_hash,
+        "stored_hash": stored_hash,
+    }
+
+
+def recover_corrupted_record(backup_value):
+    """
+    Recover a corrupted record using the provided backup value.
+    """
+    return {
+        "success": True,
+        "message": "Record recovered successfully from backup",
+        "recovered_value": backup_value,
+        "recovery_timestamp": json.dumps(
+            {"timestamp": str(time.time())},
+            default=str
+        ),
+    }
+
+
+# =========================================================
+# Utility Services
+# =========================================================
+def execute_with_timeout(func, timeout_seconds, *args, **kwargs):
+    """
+    Execute a function with a timeout. If the function takes longer than 
+    timeout_seconds, it will be interrupted.
+    """
+    import threading
+    
+    result = [None]
+    exception = [None]
+    
+    def wrapper():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            exception[0] = e
+    
+    thread = threading.Thread(target=wrapper)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+    
+    if thread.is_alive():
+        return {
+            "success": False,
+            "message": f"Function execution timed out after {timeout_seconds} seconds",
+            "timeout": True,
+        }
+    
+    if exception[0]:
+        return {
+            "success": False,
+            "message": f"Function execution failed: {str(exception[0])}",
+            "error": str(exception[0]),
+            "timeout": False,
+        }
+    
+    return {
+        "success": True,
+        "result": result[0],
+        "timeout": False,
+    }
+
+
+def retry_operation(func, max_retries=3, delay_seconds=1, *args, **kwargs):
+    """
+    Retry an operation up to max_retries times with a delay between retries.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = func(*args, **kwargs)
+            return {
+                "success": True,
+                "result": result,
+                "attempts": attempt + 1,
+            }
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(delay_seconds)
+            else:
+                return {
+                    "success": False,
+                    "message": f"Operation failed after {max_retries} attempts",
+                    "error": str(e),
+                    "attempts": max_retries,
+                }

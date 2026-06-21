@@ -1044,3 +1044,27 @@ class TokenTypeSerializer(serializers.Serializer):
         ],
         required=True
     )
+
+
+class DataIntegritySerializer(RequestSchemaValidationMixin, serializers.Serializer):
+    """
+    Serializer for verifying data integrity by comparing original data with stored hash.
+    """
+    original_data = serializers.CharField(
+        required=True,
+        help_text="Original data to verify"
+    )
+    stored_hash = serializers.CharField(
+        required=True,
+        help_text="Stored hash to compare against"
+    )
+
+
+class RecoverCorruptedRecordSerializer(RequestSchemaValidationMixin, serializers.Serializer):
+    """
+    Serializer for recovering corrupted records using backup values.
+    """
+    backup_value = serializers.CharField(
+        required=True,
+        help_text="Backup value to restore the corrupted record"
+    )
