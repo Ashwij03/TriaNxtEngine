@@ -160,118 +160,118 @@ class LoginOTP(models.Model):
 # MedicalRecord FIRST
 # ============================================
 
-class MedicalRecord(models.Model):
-    patient = models.ForeignKey(
-        'Patient', 
-        on_delete=models.CASCADE, 
-        related_name='medical_records'
-    )
-    diagnosis = models.TextField()
-    notes = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+# class MedicalRecord(models.Model):
+#     patient = models.ForeignKey(
+#         'Patient', 
+#         on_delete=models.CASCADE, 
+#         related_name='medical_records'
+#     )
+#     diagnosis = models.TextField()
+#     notes = models.TextField(blank=True, null=True)
+#     created_at = models.DateTimeField(auto_now_add=True)
+#     updated_at = models.DateTimeField(auto_now=True)
     
-    class Meta:
-        ordering = ['-created_at']
+#     class Meta:
+#         ordering = ['-created_at']
 
 
-# ============================================
-# Patient SECOND
-# ============================================
+# # ============================================
+# # Patient SECOND
+# # ============================================
 
 
-class Patient(models.Model):
-    STATUS_CHOICES = [
-        ("screening", "Screening"),
-        ("enrolled", "Enrolled"),
-        ("withdrawn", "Withdrawn"),
-        ("completed", "Completed"),
-    ]
+# class Patient(models.Model):
+#     STATUS_CHOICES = [
+#         ("screening", "Screening"),
+#         ("enrolled", "Enrolled"),
+#         ("withdrawn", "Withdrawn"),
+#         ("completed", "Completed"),
+#     ]
 
-    patient_id = models.CharField(max_length=20, unique=True, editable=False)
-    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="screening")
-    site = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="patients")
+#     patient_id = models.CharField(max_length=20, unique=True, editable=False)
+#     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="screening")
+#     site = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="patients")
 
-    first_name_encrypted = models.CharField(max_length=500, blank=True, null=True)
-    last_name_encrypted = models.CharField(max_length=500, blank=True, null=True)
-    date_of_birth_encrypted = models.CharField(max_length=500, blank=True, null=True)
-    email_encrypted = models.CharField(max_length=500, blank=True, null=True)
-    phone_encrypted = models.CharField(max_length=500, blank=True, null=True)
-    address_encrypted = models.TextField(blank=True, null=True)
-    medical_record_number_encrypted = models.CharField(max_length=500, blank=True, null=True)
+#     first_name_encrypted = models.CharField(max_length=500, blank=True, null=True)
+#     last_name_encrypted = models.CharField(max_length=500, blank=True, null=True)
+#     date_of_birth_encrypted = models.CharField(max_length=500, blank=True, null=True)
+#     email_encrypted = models.CharField(max_length=500, blank=True, null=True)
+#     phone_encrypted = models.CharField(max_length=500, blank=True, null=True)
+#     address_encrypted = models.TextField(blank=True, null=True)
+#     medical_record_number_encrypted = models.CharField(max_length=500, blank=True, null=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+#     created_at = models.DateTimeField(auto_now_add=True)
+#     updated_at = models.DateTimeField(auto_now=True)
 
-    def save(self, *args, **kwargs):
-        # For new patients only
-        if not self.id:
-            # Get count of existing patients
-            count = Patient.objects.count()
-            # Set ID starting from 1
-            self.id = count + 1
+#     def save(self, *args, **kwargs):
+#         # For new patients only
+#         if not self.id:
+#             # Get count of existing patients
+#             count = Patient.objects.count()
+#             # Set ID starting from 1
+#             self.id = count + 1
             
-            # Generate patient_id (PAT-001, PAT-002, etc.)
-            self.patient_id = f"PAT-{count + 1:03d}"
+#             # Generate patient_id (PAT-001, PAT-002, etc.)
+#             self.patient_id = f"PAT-{count + 1:03d}"
         
-        # If patient_id not set, generate it
-        if not self.patient_id:
-            count = Patient.objects.count()
-            self.patient_id = f"PAT-{count + 1:03d}"
+#         # If patient_id not set, generate it
+#         if not self.patient_id:
+#             count = Patient.objects.count()
+#             self.patient_id = f"PAT-{count + 1:03d}"
             
-        super().save(*args, **kwargs)
+#         super().save(*args, **kwargs)
 
-    def delete(self, *args, **kwargs):
+#     def delete(self, *args, **kwargs):
         
-        # Delete related medical records first
-        self.medical_records.all().delete()
+#         # Delete related medical records first
+#         self.medical_records.all().delete()
         
-        # Call the actual delete
-        super().delete(*args, **kwargs)
+#         # Call the actual delete
+#         super().delete(*args, **kwargs)
         
-        # Renumber all patients starting from 1
-        self._renumber_patients()
+#         # Renumber all patients starting from 1
+#         self._renumber_patients()
 
-    def _renumber_patients(self):
-        """Renumber all patients starting from 1."""
-        patients = Patient.objects.all().order_by('id')
+#     def _renumber_patients(self):
+#         """Renumber all patients starting from 1."""
+#         patients = Patient.objects.all().order_by('id')
         
-        for index, patient in enumerate(patients, start=1):
-            new_patient_id = f"PAT-{index:03d}"
-            Patient.objects.filter(id=patient.id).update(
-                id=index,
-                patient_id=new_patient_id
-            )
+#         for index, patient in enumerate(patients, start=1):
+#             new_patient_id = f"PAT-{index:03d}"
+#             Patient.objects.filter(id=patient.id).update(
+#                 id=index,
+#                 patient_id=new_patient_id
+#             )
 
-    def set_pii(self, first_name=None, last_name=None, dob=None, email=None, phone=None, address=None, mrn=None):
-        if first_name is not None:
-            self.first_name_encrypted = encrypt_value(first_name)
-        if last_name is not None:
-            self.last_name_encrypted = encrypt_value(last_name)
-        if dob is not None:
-            self.date_of_birth_encrypted = encrypt_value(dob)
-        if email is not None:
-            self.email_encrypted = encrypt_value(email)
-        if phone is not None:
-            self.phone_encrypted = encrypt_value(phone)
-        if address is not None:
-            self.address_encrypted = encrypt_value(address)
-        if mrn is not None:
-            self.medical_record_number_encrypted = encrypt_value(mrn)
+#     def set_pii(self, first_name=None, last_name=None, dob=None, email=None, phone=None, address=None, mrn=None):
+#         if first_name is not None:
+#             self.first_name_encrypted = encrypt_value(first_name)
+#         if last_name is not None:
+#             self.last_name_encrypted = encrypt_value(last_name)
+#         if dob is not None:
+#             self.date_of_birth_encrypted = encrypt_value(dob)
+#         if email is not None:
+#             self.email_encrypted = encrypt_value(email)
+#         if phone is not None:
+#             self.phone_encrypted = encrypt_value(phone)
+#         if address is not None:
+#             self.address_encrypted = encrypt_value(address)
+#         if mrn is not None:
+#             self.medical_record_number_encrypted = encrypt_value(mrn)
 
-    def get_pii(self):
-        return {
-            "first_name": decrypt_value(self.first_name_encrypted),
-            "last_name": decrypt_value(self.last_name_encrypted),
-            "date_of_birth": decrypt_value(self.date_of_birth_encrypted),
-            "email": decrypt_value(self.email_encrypted),
-            "phone": decrypt_value(self.phone_encrypted),
-            "address": decrypt_value(self.address_encrypted),
-            "medical_record_number": decrypt_value(self.medical_record_number_encrypted),
-        }
+#     def get_pii(self):
+#         return {
+#             "first_name": decrypt_value(self.first_name_encrypted),
+#             "last_name": decrypt_value(self.last_name_encrypted),
+#             "date_of_birth": decrypt_value(self.date_of_birth_encrypted),
+#             "email": decrypt_value(self.email_encrypted),
+#             "phone": decrypt_value(self.phone_encrypted),
+#             "address": decrypt_value(self.address_encrypted),
+#             "medical_record_number": decrypt_value(self.medical_record_number_encrypted),
+#         }
 
-    def __str__(self):
-        return f"Patient {self.patient_id}"
+#     def __str__(self):
+#         return f"Patient {self.patient_id}"
 
 
 class AuditLog(models.Model):

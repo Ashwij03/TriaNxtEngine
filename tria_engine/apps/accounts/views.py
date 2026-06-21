@@ -1,30 +1,34 @@
-# accounts/views.py
-
 from datetime import timedelta
+from dbm import error
 from django.contrib.auth import login
 from django.http import FileResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.views import APIView
+from rest_framework.views import APIView as DRFAPIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.exceptions import MethodNotAllowed, ValidationError
+from rest_framework import serializers
+from django.core.paginator import Paginator
+#from .serializers import PaginationSerializer
 
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from urllib3 import request
 
 from .serializers import (
     UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
-    IntegritySerializer, PatientSerializer,
+    IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
-    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer
+    ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer, SortingSerializer
 )
 from .services import (
     login_user, login_user_with_mfa, verify_login_otp, forgot_password_user,
-    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service
+    reset_password_user, change_password_user, upload_document, get_document_by_number, get_audit_logs_service, delete_document_by_number, upload_profile_photo, get_profile_photo, delete_profile_photo, report_compromised_token, create_audit_log, get_all_users_service, integrity_check_service, upload_form_service, delete_uploaded_form_service, get_uploaded_form_service, validate_api_endpoint_availability, validate_api_request_schema, validate_api_response_schema, validate_rate_limit
 )
-from .models import User, Patient, UploadedDocument
+from .models import User, UploadedDocument
 from .audit import log_audit_event
 
 # User = get_user_model()
@@ -34,14 +38,169 @@ otp_storage = {}
 otp_expiry = {}
 
 
-class RegisterAPI(APIView):
-    permission_classes = [AllowAny]
+# API VALIDATION CHANGE: All account APIs inherit this local APIView wrapper.
+# It validates endpoint availability for correct method and required headers
+# before the existing API logic runs.
 
-    @swagger_auto_schema(request_body=RegisterSerializer)
+@method_decorator(csrf_exempt, name='dispatch')
+class APIView(DRFAPIView):
+    # API VALIDATION CHANGE: Default HTTP method behavior for account APIs.
+    # POST/PUT/PATCH require a body; GET/DELETE should normally not send one.
+    body_required_methods = {"POST", "PUT", "PATCH"}
+    body_forbidden_methods = {"GET", "DELETE"}
+    # API VALIDATION CHANGE: Views can declare success response_schema to check
+    # outgoing structure, fields, and data types before the response is sent.
+    response_schema = None
+
+    def initial(self, request, *args, **kwargs):
+        allowed_content_types = [
+            "application/json",
+            "multipart/form-data",
+            "application/x-www-form-urlencoded",
+        ]
+
+        if (
+            "parser_classes" in self.__class__.__dict__ and
+            MultiPartParser in self.parser_classes
+        ):
+            allowed_content_types = [
+                "multipart/form-data",
+                "application/x-www-form-urlencoded",
+            ]
+
+        requires_auth = not any(
+            permission_class is AllowAny
+            for permission_class in self.permission_classes
+        )
+
+        validation_errors, status_code = validate_api_endpoint_availability(
+            request=request,
+            allowed_methods=self.allowed_methods,
+            requires_auth=requires_auth,
+            allowed_content_types=allowed_content_types,
+            body_required_methods=self.body_required_methods,
+            body_forbidden_methods=self.body_forbidden_methods,
+        )
+
+        if validation_errors:
+            if status_code == 405:
+                raise MethodNotAllowed(
+                    request.method,
+                    detail=validation_errors.get("method"),
+                )
+
+            raise ValidationError(
+                {
+                    "message": "API validation failed",
+                    "errors": validation_errors,
+                }
+            )
+            
+            
+        # =====================================================
+        # API VALIDATION CHANGE:
+        # Rate Limiting validation
+        # Thresholds and response after limit exceeded.
+        # =====================================================
+
+        current_request_count = 1
+        threshold = 100
+        retry_after_seconds = 60
+
+        rate_limit_error, status_code = validate_rate_limit(
+        current_request_count=current_request_count,
+        threshold=threshold,
+        retry_after_seconds=retry_after_seconds,
+        )
+
+        if rate_limit_error:
+            raise ValidationError(rate_limit_error)
+
+        return super().initial(request, *args, **kwargs)
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(
+            request,
+            response,
+            *args,
+            **kwargs,
+        )
+
+        if (
+            isinstance(response, Response) and
+            response.status_code < 400 and
+            response.data is not None
+        ):
+            schema_error, observed_schema = validate_api_response_schema(
+                response.data,
+                self.response_schema,
+            )
+            response["X-Response-Schema-Validated"] = (
+                "true" if not schema_error else "false"
+            )
+
+            if schema_error:
+                response.data = schema_error
+                response.status_code = 500
+                return response
+
+            response["X-Response-Schema-Type"] = observed_schema["type"]
+
+        return response
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class RegisterAPI(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    # API VALIDATION CHANGE: Expected successful registration response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "user_id"],
+        "fields": {
+            "message": {"type": "str"},
+            "user_id": {"type": "int"},
+        },
+    }
+
+    @swagger_auto_schema(request_body=RegisterSerializer, responses={
+        201: "User registered successfully",
+        400: "Validation Error",
+        409: "Email or Username already exists",
+        500: "Internal Server Error",
+    })
+
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        if serializer.is_valid():
+        try:
+
+            serializer = RegisterSerializer(data=request.data)
+
+            # API VALIDATION CHANGE:
+            # Return request-schema details on invalid input.
+            schema_error, status_code = validate_api_request_schema(serializer)
+
+            if schema_error:
+
+                # API VALIDATION CHANGE:
+                # Return 409 Conflict when duplicate email or username exists.
+                errors = schema_error.get("errors", {})
+
+                if (
+                    "email" in errors or
+                    "username" in errors
+                ):
+                    return Response(
+                        schema_error,
+                        status=409
+                    )
+
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
             user = serializer.save()
+
             create_audit_log(
                 user=user,
                 action="REGISTER",
@@ -49,21 +208,82 @@ class RegisterAPI(APIView):
                 description=f"{user.username} registered into system",
                 signature_meaning="User electronically signed registration"
             )
-            log_audit_event("user_registered", user=user, request=request)
-            return Response({"message": "User registered", "user_id": user.id}, status=201)
-        return Response(serializer.errors, status=400)
+
+            log_audit_event(
+                "user_registered",
+                user=user,
+                request=request
+            )
+
+            return Response(
+                {
+                    "message": "User registered",
+                    "user_id": user.id
+                },
+                status=201
+            )
+
+        except Exception as e:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected server-side errors.
+            return Response(
+                {
+                    "message": str(e)
+                },
+                status=500
+            )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class UserListAPI(APIView):
     permission_classes = [IsAuthenticated]
-
     @swagger_auto_schema(responses={200: UserListSerializer(many=True)})
     def get(self, request):
+
         if request.user.is_superuser:
             users = get_all_users_service()
         else:
-            users = User.objects.filter(organization=request.user.organization)
-            
+            users = User.objects.filter(
+                organization=request.user.organization
+            )
+
+        # =====================================================
+        # API VALIDATION CHANGE: Pagination validation
+        # =====================================================
+
+        pagination_serializer = PaginationSerializer(
+            data=request.GET
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            pagination_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        page_number = pagination_serializer.validated_data[
+            "page_number"
+        ]
+
+        page_size = pagination_serializer.validated_data[
+            "page_size"
+        ]
+
+        paginator = Paginator(
+            users,
+            page_size
+        )
+
+        page = paginator.get_page(
+            page_number
+        )
+
         create_audit_log(
             user=request.user,
             action="VIEW_USERS",
@@ -71,19 +291,80 @@ class UserListAPI(APIView):
             description=f"{request.user.username} viewed users list",
             signature_meaning="User electronically signed for viewing users"
         )
+
+        return Response(
+            {
+                "page_number": page_number,
+                "page_size": page_size,
+                "total_count": paginator.count,
+                "total_pages": paginator.num_pages,
+                "results": UserListSerializer(
+                    page.object_list,
+                    many=True
+                ).data
+            },
+            status=200
+        )
+    
+
+    # @swagger_auto_schema(responses={200: UserListSerializer(many=True)})
+    # def get(self, request):
+    #     if request.user.is_superuser:
+    #         users = get_all_users_service()
+    #     else:
+    #         users = User.objects.filter(organization=request.user.organization)    
+        # create_audit_log(
+        #     user=request.user,
+        #     action="VIEW_USERS",
+        #     ip_address=request.META.get('REMOTE_ADDR'),
+        #     description=f"{request.user.username} viewed users list",
+        #     signature_meaning="User electronically signed for viewing users"
+        # )
         
-        return Response(UserListSerializer(users, many=True).data)
+        # return Response(UserListSerializer(users, many=True).data)
 
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class LoginAPI(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
+    # API VALIDATION CHANGE: Expected successful login response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "user"],
+        "fields": {
+            "message": {"type": "str"},
+            "user": {
+                "type": "dict",
+                "required_fields": [
+                    "id",
+                    "email",
+                    "username",
+                    "first_name",
+                    "last_name",
+                    "is_active",
+                ],
+                "fields": {
+                    "id": {"type": "int"},
+                    "email": {"type": "str"},
+                    "username": {"type": "str"},
+                    "first_name": {"type": "str"},
+                    "last_name": {"type": "str"},
+                    "is_active": {"type": "bool"},
+                },
+            },
+        },
+    }
 
     @swagger_auto_schema(request_body=LoginSerializer)
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=400)
+        # API VALIDATION CHANGE: Validate required fields, optional fields,
+        # and data types before login processing.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
+            return Response(schema_error, status=status_code)
 
         user, error = login_user(
             email=serializer.validated_data["email"],
@@ -128,9 +409,11 @@ class LoginAPI(APIView):
             status=200
         )
 
+
+@method_decorator(csrf_exempt, name='dispatch')
 class CheckSessionAPI(APIView):
 
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         manual_parameters=[
@@ -176,6 +459,14 @@ class CheckSessionAPI(APIView):
                     },
                     status=401
                 )
+                
+                #added new print statements for testing session timeout, should remove later
+            # print("NOW:", timezone.now())
+            # print("LAST_ACTIVITY:", user.last_activity)
+            # print(
+            #         "DIFFERENCE:",
+            #         timezone.now() - user.last_activity
+            # )   
 
             inactive_time = (
                 timezone.now() -
@@ -237,13 +528,17 @@ class CheckSessionAPI(APIView):
             )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class LoginMFAAPI(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(request_body=LoginMFASerializer)
     def post(self, request):
         serializer = LoginMFASerializer(data=request.data)
-        if not serializer.is_valid(): 
+        # API VALIDATION CHANGE: Validate request schema before MFA login.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
             create_audit_log(
                 user=None,
                 action="FAILED_MFA_LOGIN",
@@ -251,7 +546,7 @@ class LoginMFAAPI(APIView):
                 description="Failed MFA login attempt",
                 signature_meaning="Failed MFA electronic signature"
             )
-            return Response(serializer.errors, status=400)
+            return Response(schema_error, status=status_code)
 
         result, error = login_user_with_mfa(**serializer.validated_data, request=request)
         if error:
@@ -275,14 +570,29 @@ class LoginMFAAPI(APIView):
         return Response(result, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class VerifyLoginOTPAPI(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
+    # API VALIDATION CHANGE: Expected successful MFA verification response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "user_id"],
+        "fields": {
+            "message": {"type": "str"},
+            "user_id": {"type": "int"},
+        },
+    }
 
     @swagger_auto_schema(request_body=VerifyLoginOTPSerializer)
     def post(self, request):
+        
+        
         serializer = VerifyLoginOTPSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=400)
+        # API VALIDATION CHANGE: Validate request schema before OTP verification.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
+            return Response(schema_error, status=status_code)
 
         user, error = verify_login_otp(
             email=serializer.validated_data["email"],
@@ -304,6 +614,12 @@ class VerifyLoginOTPAPI(APIView):
 
         login(request, user, backend="django.contrib.auth.backends.ModelBackend")
         
+        user.last_activity = timezone.now()
+
+        user.save(
+            update_fields=["last_activity"]
+        )
+        
         create_audit_log(
             user=user,
             action="MFA_VERIFIED",
@@ -314,8 +630,10 @@ class VerifyLoginOTPAPI(APIView):
         return Response({"message": "MFA login successful", "user_id": user.id}, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ForgotPasswordAPI(APIView):
 
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
@@ -323,130 +641,178 @@ class ForgotPasswordAPI(APIView):
     )
     def post(self, request):
 
-        serializer = ForgotPasswordSerializer(
-            data=request.data
-        )
+        try:
 
-        if not serializer.is_valid():
-
-            return Response(
-                serializer.errors,
-                status=400
+            serializer = ForgotPasswordSerializer(
+                data=request.data
             )
 
-        result, error = forgot_password_user(
-            email=serializer.validated_data["email"],
-            request=request,
-        )
+            # API VALIDATION CHANGE: Validate forgot-password request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        if error:
+            if schema_error:
+
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            result, error = forgot_password_user(
+                email=serializer.validated_data["email"],
+                request=request,
+            )
+
+            if error:
+
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=404
+                )
+
+            user = User.objects.filter(
+                email=serializer.validated_data["email"]
+            ).first()
+
+            if user:
+
+                create_audit_log(
+                    user=user,
+                    action="FORGOT_PASSWORD",
+                    ip_address=request.META.get("REMOTE_ADDR"),
+                    description=(
+                        f"{user.username} requested forgot password"
+                    ),
+                    signature_meaning=(
+                        "User electronically signed forgot password request"
+                    )
+                )
 
             return Response(
                 {
-                    "message": error
+                    "message": "Password reset instructions sent successfully",
+                    "data": result,
                 },
-                status=404
+                status=200
             )
 
-        user = User.objects.filter(email=serializer.validated_data["email"]).first()
+        except Exception:
 
-        if user:
-
-            create_audit_log(
-                user=user,
-                action="FORGOT_PASSWORD",
-                ip_address=request.META.get("REMOTE_ADDR"),
-                description=(
-                    f"{user.username} requested forgot password"
-                ),
-                signature_meaning=(
-                    "User electronically signed forgot password request"
-                )
+            # API VALIDATION CHANGE:
+            # Handle unexpected forgot-password errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
             )
 
-        return Response(
-            {
-                "message": "Password reset instructions sent successfully",
-                "data": result,
-            },
-            status=200
-        )
 
-
+@method_decorator(csrf_exempt, name='dispatch')
 class ResetPasswordAPI(APIView):
-
+    
+    authentication_classes = []
     permission_classes = [AllowAny]
+
+    # API VALIDATION CHANGE: Expected successful reset-password response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message"],
+        "fields": {
+            "message": {"type": "str"},
+        },
+    }
 
     @swagger_auto_schema(
         request_body=ResetPasswordSerializer
     )
     def post(self, request):
 
-        serializer = ResetPasswordSerializer(
-            data=request.data
-        )
+        try:
 
-        if not serializer.is_valid():
-
-            return Response(
-                serializer.errors,
-                status=400
+            serializer = ResetPasswordSerializer(
+                data=request.data
             )
 
-        user, error = reset_password_user(
-            email=serializer.validated_data["email"],
-            otp_code=serializer.validated_data["otp_code"],
-            new_password=serializer.validated_data["new_password"],
-            request=request,
-        )
+            # API VALIDATION CHANGE: Validate reset-password request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        if error:
+            if schema_error:
+
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            user, error = reset_password_user(
+                email=serializer.validated_data["email"],
+                otp_code=serializer.validated_data["otp_code"],
+                new_password=serializer.validated_data["new_password"],
+                request=request,
+            )
+
+            if error:
+
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+
+            if user:
+
+                create_audit_log(
+                    user=user,
+                    action="RESET_PASSWORD",
+                    ip_address=request.META.get("REMOTE_ADDR"),
+                    description="User password reset successfully",
+                    signature_meaning=(
+                        "User electronically signed for password reset"
+                    )
+                )
 
             return Response(
                 {
-                    "message": error
+                    "message": "Password reset successful"
                 },
-                status=400
+                status=200
             )
 
-        if user:
+        except Exception:
 
-            create_audit_log(
-                user=user,
-                action="RESET_PASSWORD",
-                ip_address=request.META.get("REMOTE_ADDR"),
-                description="User password reset successfully",
-                signature_meaning=(
-                    "User electronically signed for password reset"
-                )
+            # API VALIDATION CHANGE:
+            # Handle unexpected password reset errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
             )
 
-        return Response(
-            {
-                "message": "Password reset successful"
-            },
-            status=200
-        )
 
-
+@method_decorator(csrf_exempt, name='dispatch')
 class ChangePasswordAPI(APIView):
-
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         request_body=ChangePasswordSerializer
     )
     def post(self, request):
+        
 
         serializer = ChangePasswordSerializer(
             data=request.data
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate change-password request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         try:
@@ -547,8 +913,12 @@ class ChangePasswordAPI(APIView):
             )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class CompromisedTokenReportAPI(APIView):
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: This POST endpoint receives token_type in the query
+    # string, so it does not require a request body.
+    body_required_methods = set()
 
     @swagger_auto_schema(
         manual_parameters=[
@@ -586,205 +956,118 @@ class CompromisedTokenReportAPI(APIView):
         return Response(result, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class IntegrityCheckAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+
+    # API VALIDATION CHANGE: Expected integrity-check response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "original_message", "sha256_hash"],
+        "fields": {
+            "message": {"type": "str"},
+            "original_message": {"type": "str"},
+            "sha256_hash": {"type": "str"},
+        },
+    }
 
     @swagger_auto_schema(
         request_body=IntegritySerializer
     )
     def post(self, request):
 
-        serializer = IntegritySerializer(
-            data=request.data
-        )
+        try:
 
-        if not serializer.is_valid():
-
-            return Response(
-                serializer.errors,
-                status=400
+            serializer = IntegritySerializer(
+                data=request.data
             )
 
-        response = integrity_check_service(
-            serializer.validated_data[
-                "message"
-            ]
-        )
+            # API VALIDATION CHANGE: Validate integrity-check request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        log_audit_event(
-            "integrity_check_completed",
-            user=request.user,
-            request=request,
-            status="success",
-        )
+            if schema_error:
 
-        create_audit_log(
-            user=request.user,
-            action="INTEGRITY_CHECK",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} performed integrity check",
-            signature_meaning="Integrity verification electronically signed"
-        )
-        
-        return Response(
-            response,
-            status=200
-        )
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
 
+            response = integrity_check_service(
+                serializer.validated_data[
+                    "message"
+                ]
+            )
 
-@method_decorator(csrf_exempt, name="dispatch")
-class PatientListCreateAPI(APIView):
-    permission_classes = [IsAuthenticated]
+            log_audit_event(
+                "integrity_check_completed",
+                user=request.user,
+                request=request,
+                status="success",
+            )
 
-    def get_queryset(self, request):
-        if request.user.is_superuser:
-            return Patient.objects.all().order_by("id")
-        return Patient.objects.filter(site=request.user.organization).order_by("id")
-
-    @swagger_auto_schema(responses={200: PatientSerializer(many=True)})
-    def get(self, request):
-        patients = self.get_queryset(request)
-        serializer = PatientSerializer(patients, many=True, context={"request": request})
-        log_audit_event("patient_list_viewed", user=request.user, request=request)
-        
-        create_audit_log(
-            user=request.user,
-            action="VIEW_PATIENTS",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} viewed patient list",
-            signature_meaning="Viewed patient records"
-        )
-        
-        return Response(serializer.data, status=200)
-
-    @swagger_auto_schema(request_body=PatientSerializer, responses={201: PatientSerializer})
-    def post(self, request):
-        serializer = PatientSerializer(data=request.data, context={"request": request})
-        if serializer.is_valid():
-            patient = serializer.save()
-            log_audit_event("patient_created", user=request.user, patient=patient, request=request)
-            
             create_audit_log(
                 user=request.user,
-                action="CREATE_PATIENT",
+                action="INTEGRITY_CHECK",
                 ip_address=request.META.get('REMOTE_ADDR'),
-                description=f"{request.user.username} created patient {patient.id}",
-                signature_meaning="Patient creation electronically signed"
+                description=f"{request.user.username} performed integrity check",
+                signature_meaning="Integrity verification electronically signed"
             )
-            
+
+            return Response(
+                response,
+                status=200
+            )
+
+        except Exception:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected integrity-check errors.
             return Response(
                 {
-                    "message": "Patient created",
-                    "data": PatientSerializer(patient, context={"request": request}).data,
+                    "message": "Internal Server Error"
                 },
-                status=201,
-            )
-        
-        create_audit_log(
-            user=request.user,
-            action="FAILED_CREATE_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} failed to create patient",
-            signature_meaning="Failed patient creation"
-        )
-        
-        return Response(serializer.errors, status=400)
-
-
-@method_decorator(csrf_exempt, name="dispatch")
-class PatientDetailAPI(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get_object(self, request, pk):
-        try:
-            patient = Patient.objects.get(pk=pk)
-        except Patient.DoesNotExist:
-            return None
-
-        if request.user.is_superuser:
-            return patient
-
-        if not request.user.organization_id:
-            return None
-
-        if patient.site_id != request.user.organization_id:
-            return None
-
-        return patient
-
-    @swagger_auto_schema(responses={200: PatientSerializer})
-    def get(self, request, pk):
-        patient = self.get_object(request, pk)
-        if patient is None:
-            return Response({"message": "Not found or Forbidden"}, status=403)
-
-        log_audit_event("patient_viewed", user=request.user, patient=patient, request=request)
-        
-        create_audit_log(
-            user=request.user,
-            action="VIEW_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} viewed patient {patient.id}",
-            signature_meaning="Patient record viewed"
-        )
-        
-        return Response(PatientSerializer(patient, context={"request": request}).data, status=200)
-
-    @swagger_auto_schema(request_body=PatientSerializer, responses={200: PatientSerializer})
-    def put(self, request, pk):
-        patient = self.get_object(request, pk)
-        if patient is None:
-            return Response({"message": "Not found or Forbidden"}, status=403)
-
-        serializer = PatientSerializer(patient, data=request.data, partial=True, context={"request": request})
-        if serializer.is_valid():
-            serializer.save()
-            log_audit_event("patient_updated", user=request.user, patient=patient, request=request)
-            
-            create_audit_log(
-                user=request.user,
-                action="UPDATE_PATIENT",
-                ip_address=request.META.get('REMOTE_ADDR'),
-                description=f"{request.user.username} updated patient {patient.id}",
-                signature_meaning="Patient update electronically signed"
+                status=500
             )
             
-            return Response({"message": "Patient updated"}, status=200)
-        
-        create_audit_log(
-            user=request.user,
-            action="UPDATE_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} updated patient {patient.id}",
-            signature_meaning="Patient update electronically signed"
-        )
-
-        return Response(serializer.errors, status=400)
-
-    def delete(self, request, pk):
-        patient = self.get_object(request, pk)
-        if patient is None:
-            return Response({"message": "Not found or Forbidden"}, status=403)
-
-        log_audit_event("patient_deleted", user=request.user, patient=patient, request=request)
-        
-        create_audit_log(
-            user=request.user,
-            action="DELETE_PATIENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} deleted patient {patient.id}",
-            signature_meaning="Patient deletion electronically signed"
-        )
-        
-        patient.delete()
-        return Response({"message": "Patient deleted"}, status=200)
-
-
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentListAPI(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(responses={200: UploadedDocumentSerializer(many=True)})
+    # @swagger_auto_schema(responses={200: UploadedDocumentSerializer(many=True)})
+    @swagger_auto_schema(
+    manual_parameters=[
+        openapi.Parameter(
+            'sort_by',
+            openapi.IN_QUERY,
+            description='Field to sort by',
+            type=openapi.TYPE_STRING,
+            enum=[
+                'document_number',
+                'original_name',
+                'file_size',
+                'category',
+                'created_at',
+                'updated_at',
+                'content_type',
+                'organization',
+                'uploaded_by'
+            ]
+        ),
+        openapi.Parameter(
+            'sort_order',
+            openapi.IN_QUERY,
+            description='Sort order',
+            type=openapi.TYPE_STRING,
+            enum=[
+                'asc',
+                'desc'
+            ]
+        )
+    ],
+    responses={200: UploadedDocumentSerializer(many=True)}
+)  
+    
     def get(self, request):
         if request.user.is_superuser:
             documents = UploadedDocument.objects.select_related(
@@ -799,6 +1082,124 @@ class DocumentListAPI(APIView):
                 organization=request.user.organization
             ).order_by("document_number")
             
+        # =====================================================
+        # API VALIDATION CHANGE: Pagination validation
+        # =====================================================
+
+        pagination_serializer = PaginationSerializer(
+            data=request.GET
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            pagination_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
+            )
+# =====================================================
+# API VALIDATION CHANGE: Filtering validation
+# =====================================================
+           
+            
+        filter_serializer = FilterSerializer(
+            data=request.GET
+            )
+
+        schema_error, status_code = validate_api_request_schema(
+            filter_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        filter_by = filter_serializer.validated_data.get(
+            "filter_by"
+        )
+
+        filter_value = filter_serializer.validated_data.get(
+            "filter_value"
+        )
+
+        # =====================================================
+        # API VALIDATION CHANGE: Apply filtering
+        # =====================================================      
+        if filter_by and filter_value:
+            documents = documents.filter(
+                **{
+                    filter_by: filter_value
+                }
+            )
+ 
+        # =====================================================
+        # API VALIDATION CHANGE: Sorting validation
+        # =====================================================
+
+        sorting_serializer = SortingSerializer(
+            data=request.GET
+        )
+
+        schema_error, status_code = validate_api_request_schema(
+            sorting_serializer
+        )
+
+        if schema_error:
+        
+            return Response(
+                schema_error,
+                status=status_code
+            )
+
+        sort_by = sorting_serializer.validated_data.get(
+            "sort_by"
+        )
+
+        sort_order = sorting_serializer.validated_data.get(
+            "sort_order",
+            "asc"
+        )
+
+        # =====================================================
+        # API VALIDATION CHANGE: Apply sorting
+        # =====================================================
+
+        if sort_by:
+        
+            if sort_order.lower() == "desc":
+                documents = documents.order_by(
+                    f"-{sort_by}"
+                )
+            else:
+                documents = documents.order_by(
+                    sort_by
+                )     ##       
+            
+            
+        page_number = pagination_serializer.validated_data[
+            "page_number"
+        ]
+
+        page_size = pagination_serializer.validated_data[
+            "page_size"
+        ]
+
+        paginator = Paginator(
+            documents,
+            page_size
+        )
+
+        page = paginator.get_page(
+            page_number
+        )    
+         #   
+            
         create_audit_log(
             user=request.user,
             action="VIEW_DOCUMENTS",
@@ -806,13 +1207,60 @@ class DocumentListAPI(APIView):
             description=f"{request.user.username} viewed document list",
             signature_meaning="Document viewing electronically signed"
         )
+        return Response(
+    {
+        "page_number": page_number,
+        "page_size": page_size,
+        "total_count": paginator.count,
+        "total_pages": paginator.num_pages,
+        "results": UploadedDocumentSerializer(
+            page.object_list,
+            many=True
+        ).data
+    },
+    status=200
+)
         
-        return Response(UploadedDocumentSerializer(documents, many=True).data, status=200)
+        # return Response(UploadedDocumentSerializer(documents, many=True).data, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentUploadAPI(APIView):
-
+    
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful document-upload response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "data"],
+        "fields": {
+            "message": {"type": "str"},
+            "data": {
+                "type": "dict",
+                "required_fields": [
+                    "document_number",
+                    "original_name",
+                    "content_type",
+                    "file_size",
+                    "category",
+                    "organization",
+                    "uploaded_by",
+                    "created_at",
+                    "updated_at",
+                ],
+                "fields": {
+                    "document_number": {"type": "int"},
+                    "original_name": {"type": "str"},
+                    "content_type": {"type": "any"},
+                    "file_size": {"type": "int"},
+                    "category": {"type": "str"},
+                    "organization": {"type": "any"},
+                    "uploaded_by": {"type": "str"},
+                    "created_at": {"type": "str"},
+                    "updated_at": {"type": "str"},
+                },
+            },
+        },
+    }
 
     parser_classes = [
         MultiPartParser,
@@ -858,81 +1306,161 @@ class DocumentUploadAPI(APIView):
             ),
         ],
         responses={
-            201: UploadedDocumentSerializer
+            201: UploadedDocumentSerializer,
+            400: "Validation Error",
+            401: "Unauthorized",
+            500: "Internal Server Error",
         },
     )
+    
     def post(self, request):
-
-        serializer = DocumentUploadSerializer(
-            data=request.data
-        )
-
-        if not serializer.is_valid():
-
-            return Response(
-                serializer.errors,
-                status=400
-            )
-
-        user_id = serializer.validated_data[
-            "user_id"
-        ]
+        
         
 
-        uploaded_file = serializer.validated_data[
-            "file"
-        ]
+        try:
 
-        category = serializer.validated_data.get(
-            "category",
-            "general"
-        )
+            serializer = DocumentUploadSerializer(
+                data=request.data
+            )
 
-        document, error = upload_document(
-            user_id=user_id,
-            uploaded_file=uploaded_file,
-            uploaded_by=request.user,
-            category=category,
-            organization=request.user.organization,
-            request=request,
-        )
+            # API VALIDATION CHANGE: Validate document-upload request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        if error:
+            if schema_error:
+
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+            user_id = serializer.validated_data[
+                "user_id"
+            ]
+
+            # API VALIDATION CHANGE:
+            # Email validated for request consistency.
+            uploaded_by_email = serializer.validated_data[
+                "uploaded_by"
+            ]
+
+            uploaded_file = serializer.validated_data[
+                "file"
+            ]    
+
+            # user_id = serializer.validated_data[
+            #     "user_id"
+            # ]
+
+            # uploaded_file = serializer.validated_data[
+            #     "file"
+            # ]
+            
+
+            category = serializer.validated_data.get(
+                "category",
+                "general"
+            )
+
+            # document, error = upload_document(
+            #     user_id=user_id,
+            #     uploaded_file=uploaded_file,
+            #     uploaded_by=request.user,
+            #     category=category,
+            #     organization=request.user.organization,
+            #     request=request,
+            # )
+
+            # if error:
+
+            #     return Response(
+            #         {
+            #             "message": error
+            #         },
+            #         status=400
+            #     )
+            
+            
+            if uploaded_by_email != request.user.email:
+
+                return Response(
+                    {
+                        "message": (
+                        "uploaded_by must match "
+                        "the authenticated user's email"
+                        )
+                    },
+                    status=400
+                )
+
+            document,error = upload_document(
+                user_id=user_id,
+                uploaded_file=uploaded_file,
+                uploaded_by=request.user,
+                category=category,
+                organization=request.user.organization,
+                request=request,
+            )
+            # API VALIDATION CHANGE:
+            # Handle upload service errors before accessing document fields.
+            if error:
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+              
+            create_audit_log(
+                user=request.user,
+                action="UPLOAD_DOCUMENT",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} uploaded document {document.document_number}",
+                signature_meaning="Document upload electronically signed"
+            )
 
             return Response(
                 {
-                    "message": error
+                    "message": "Document uploaded successfully",
+                    "data": UploadedDocumentSerializer(
+                        document
+                    ).data,
+                },
+                status=201,
+            )
+
+        # except Exception as e:
+
+        #     return Response(
+        #         {
+        #             "message": str(e)
+        #         },
+        #         status=500
+        #     )
+        
+        # API VALIDATION CHANGE:
+        # Return standardized validation response
+        # for file upload errors.
+        except (ValidationError, serializers.ValidationError) as e:
+            return Response(
+                {
+                    "message": "Validation failed",
+                    "errors": getattr(e, "detail", str(e))
                 },
                 status=400
             )
+        except Exception as e:
+            
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
+
         
-        create_audit_log(
-            user=request.user,
-            action="UPLOAD_DOCUMENT",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} uploaded document {document.document_number}",
-            signature_meaning="Document upload electronically signed"
-        )
 
-        return Response(
-            {
-                "message": (
-                    "Document uploaded "
-                    "successfully"
-                ),
-                "data": (
-                    UploadedDocumentSerializer(
-                        document
-                    ).data
-                ),
-            },
-            status=201,
-        )
-# class for document download and deletion based on document number with proper permissions and audit logging
-
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentDownloadAPI(APIView):
     permission_classes = [IsAuthenticated]
-
     @swagger_auto_schema(
         manual_parameters=[
             openapi.Parameter(
@@ -948,7 +1476,6 @@ class DocumentDownloadAPI(APIView):
         document_number = request.query_params.get("document_number")
         if not document_number:
             return Response({"message": "document_number is required"}, status=400)
-
         document, error = get_document_by_number(
             document_number=document_number,
             user=request.user,
@@ -956,7 +1483,6 @@ class DocumentDownloadAPI(APIView):
         )
         if error:
             return Response({"message": error}, status=404)
-
         return FileResponse(
             document.file.open("rb"),
             as_attachment=True,
@@ -964,6 +1490,7 @@ class DocumentDownloadAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class DocumentDeleteAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -1049,8 +1576,18 @@ class DocumentDeleteAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ProfilePhotoUploadAPI(APIView):
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful profile-photo response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "profile_photo"],
+        "fields": {
+            "message": {"type": "str"},
+            "profile_photo": {"type": "any"},
+        },
+    }
     parser_classes = [MultiPartParser, FormParser]
 
     @swagger_auto_schema(
@@ -1082,61 +1619,87 @@ class ProfilePhotoUploadAPI(APIView):
     )
     def post(self, request):
 
-        serializer = ProfilePhotoUploadSerializer(
-            data=request.data
-        )
+        try:
 
-        if not serializer.is_valid():
-
-            return Response(
-                serializer.errors,
-                status=400
+            serializer = ProfilePhotoUploadSerializer(
+                data=request.data
             )
 
-        uploaded_file = serializer.validated_data[
-            "photo"
-        ]
+            # API VALIDATION CHANGE: Validate profile-photo request schema.
+            schema_error, status_code = validate_api_request_schema (serializer)
 
-        user, error = upload_profile_photo(
-            user=request.user,
-            uploaded_file=uploaded_file,
-            request=request,
-        )
+            if schema_error:
 
-        if error:
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
+
+            uploaded_file = serializer.validated_data[
+                "photo"
+            ]
+
+            user, error = upload_profile_photo(
+                user=request.user,
+                uploaded_file=uploaded_file,
+                request=request,
+            )
+
+            if error:
+
+                return Response(
+                    {
+                        "message": error
+                    },
+                    status=400
+                )
+
+            create_audit_log(
+                user=request.user,
+                action="PROFILE_PHOTO_UPLOAD",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} uploaded profile  photo",
+                signature_meaning="Profile photo upload electronically  signed"
+            )
 
             return Response(
                 {
-                    "message": error
+                    "message": (
+                        "Profile photo uploaded successfully"
+                    ),
+                    "profile_photo": (
+                        user.profile_photo.url
+                        if user.profile_photo
+                        else None
+                    ),
                 },
-                status=400
+                status=200,
             )
-        
-        create_audit_log(
-            user=request.user,
-            action="PROFILE_PHOTO_UPLOAD",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} uploaded profile photo",
-            signature_meaning="Profile photo upload electronically signed"
-        )
 
-        return Response(
-            {
-                "message": (
-                    "Profile photo uploaded successfully"
-                ),
-                "profile_photo": (
-                    user.profile_photo.url
-                    if user.profile_photo
-                    else None
-                ),
-            },
-            status=200,
-        )
+        except Exception:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected profile-photo upload errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ProfilePhotoViewAPI(APIView):
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected profile-photo view response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["name", "url"],
+        "fields": {
+            "name": {"type": "str"},
+            "url": {"type": "str"},
+        },
+    }
 
     def get(self, request):
 
@@ -1175,6 +1738,7 @@ class ProfilePhotoViewAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ProfilePhotoDeleteAPI(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1197,9 +1761,20 @@ class ProfilePhotoDeleteAPI(APIView):
         return Response(result, status=200)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class UploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful upload-form response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message", "form_id", "file"],
+        "fields": {
+            "message": {"type": "str"},
+            "form_id": {"type": "int"},
+            "file": {"type": "str"},
+        },
+    }
 
     parser_classes = [
         MultiPartParser,
@@ -1211,59 +1786,87 @@ class UploadFormAPI(APIView):
     )
     def post(self, request):
 
-        serializer = UploadFormSerializer(
-            data=request.data
-        )
+        try:
 
-        if not serializer.is_valid():
-
-            return Response(
-                serializer.errors,
-                status=400
+            serializer = UploadFormSerializer(
+                data=request.data
             )
 
-        user_id = serializer.validated_data[
-            "user_id"
-        ]
+            # API VALIDATION CHANGE: Validate upload-form request schema.
+            schema_error, status_code = validate_api_request_schema(serializer)
 
-        form_type = serializer.validated_data[
-            "form_type"
-        ]
+            if schema_error:
 
-        uploaded_file = serializer.validated_data[
-            "file"
-        ]
+                return Response(
+                    schema_error,
+                    status=status_code
+                )
 
-        form = upload_form_service(
-            user_id,
-            request.user,
-            uploaded_file,
-            form_type
-        )
-        
-        create_audit_log(
-            user=request.user,
-            action="UPLOAD_FORM",
-            ip_address=request.META.get('REMOTE_ADDR'),
-            description=f"{request.user.username} uploaded {form_type} form",
-            signature_meaning="Form upload electronically signed"
-        )
+            user_id = serializer.validated_data[
+                "user_id"
+            ]
 
-        return Response(
-            {
-                "message": (
-                    f"{form_type} uploaded successfully"
-                ),
-                "form_id": form.id,
-                "file": form.file.url,
-            },
-            status=201
-        )
+            form_type = serializer.validated_data[
+                "form_type"
+            ]
 
+            uploaded_file = serializer.validated_data[
+                "file"
+            ]
 
+            form = upload_form_service(
+                user_id,
+                request.user,
+                uploaded_file,
+                form_type
+            )
+
+            create_audit_log(
+                user=request.user,
+                action="UPLOAD_FORM",
+                ip_address=request.META.get('REMOTE_ADDR'),
+                description=f"{request.user.username} uploaded {form_type} form",
+                signature_meaning="Form upload electronically signed"
+            )
+
+            return Response(
+                {
+                    "message": (
+                        f"{form_type} uploaded successfully"
+                    ),
+                    "form_id": form.id,
+                    "file": form.file.url,
+                },
+                status=201
+            )
+
+        except Exception:
+
+            # API VALIDATION CHANGE:
+            # Handle unexpected upload-form errors.
+            return Response(
+                {
+                    "message": "Internal Server Error"
+                },
+                status=500
+            )
+
+@method_decorator(csrf_exempt, name='dispatch')
 class DeleteUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected successful delete-upload-form response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": ["message"],
+        "fields": {
+            "message": {"type": "str"},
+        },
+    }
+    # API VALIDATION CHANGE: This DELETE endpoint uses request.data because the
+    # existing serializer validates user_id and form_id from the request body.
+    body_required_methods = {"DELETE"}
+    body_forbidden_methods = {"GET"}
 
     @swagger_auto_schema(
         request_body=DeleteUploadFormSerializer
@@ -1276,11 +1879,13 @@ class DeleteUploadFormAPI(APIView):
             )
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate delete-upload-form request schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         user_id = serializer.validated_data[
@@ -1330,9 +1935,28 @@ class DeleteUploadFormAPI(APIView):
             status=200
         )
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ViewUploadFormAPI(APIView):
 
     permission_classes = [IsAuthenticated]
+    # API VALIDATION CHANGE: Expected view-upload-form response schema.
+    response_schema = {
+        "type": "dict",
+        "required_fields": [
+            "form_id",
+            "form_type",
+            "file_name",
+            "file_url",
+            "uploaded_at",
+        ],
+        "fields": {
+            "form_id": {"type": "int"},
+            "form_type": {"type": "str"},
+            "file_name": {"type": "str"},
+            "file_url": {"type": "str"},
+            "uploaded_at": {"type": "str"},
+        },
+    }
 
     @swagger_auto_schema(
         manual_parameters=[
@@ -1351,11 +1975,13 @@ class ViewUploadFormAPI(APIView):
             data=request.GET
         )
 
-        if not serializer.is_valid():
+        # API VALIDATION CHANGE: Validate view-upload-form query schema.
+        schema_error, status_code = validate_api_request_schema(serializer)
+        if schema_error:
 
             return Response(
-                serializer.errors,
-                status=400
+                schema_error,
+                status=status_code
             )
 
         form_id = serializer.validated_data[
@@ -1401,6 +2027,7 @@ class ViewUploadFormAPI(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class AuditLogsAPI(APIView):
 
     permission_classes = [IsAuthenticated]
@@ -1415,26 +2042,52 @@ class AuditLogsAPI(APIView):
     def get(self, request):
 
         logs = get_audit_logs_service()
+        # =====================================================
+        # API VALIDATION CHANGE: Pagination validation
+        # =====================================================
+    
+        pagination_serializer = PaginationSerializer(
+            data=request.GET
+        )
 
-        create_audit_log(
-            user=request.user,
-            action="LOGIN",
-            ip_address=request.META.get(
-                "REMOTE_ADDR"
-            ),
-            description=(
-                "Viewed audit logs"
-            ),
-            signature_meaning=(
-                "Electronic signature recorded"
+        schema_error, status_code = validate_api_request_schema(
+            pagination_serializer
+        )
+
+        if schema_error:
+
+            return Response(
+                schema_error,
+                status=status_code
             )
+
+        page_number = pagination_serializer.validated_data[
+        "page_number"
+        ]
+
+        page_size = pagination_serializer.validated_data[
+        "page_size"
+        ]
+
+        paginator = Paginator(
+            logs,
+            page_size
         )
 
-        serializer = AuditLogSerializer(
-            logs,
-            many=True
+        page = paginator.get_page(
+        page_number
         )
-        
+
+        # create_audit_log(
+        #     user=request.user,
+        #     action="LOGIN",
+        #     ip_address=request.META.get(
+        #         "REMOTE_ADDR"
+        #     ),
+        #     description="Viewed audit logs",
+        #     signature_meaning="Electronic signature recorded"
+        # )
+
         create_audit_log(
             user=request.user,
             action="VIEW_AUDIT_LOGS",
@@ -1444,6 +2097,49 @@ class AuditLogsAPI(APIView):
         )
 
         return Response(
-            serializer.data,
+            {
+                "page_number": page_number,
+                "page_size": page_size,
+                "total_count": paginator.count,
+                "total_pages": paginator.num_pages,
+                "results": AuditLogSerializer(
+                    page.object_list,
+                    many=True
+                ).data
+            },
             status=200
         )
+        
+        
+
+        # create_audit_log(
+        #     user=request.user,
+        #     action="LOGIN",
+        #     ip_address=request.META.get(
+        #         "REMOTE_ADDR"
+        #     ),
+        #     description=(
+        #         "Viewed audit logs"
+        #     ),
+        #     signature_meaning=(
+        #         "Electronic signature recorded"
+        #     )
+        # )
+
+        # serializer = AuditLogSerializer(
+        #     logs,
+        #     many=True
+        # )
+        
+        # create_audit_log(
+        #     user=request.user,
+        #     action="VIEW_AUDIT_LOGS",
+        #     ip_address=request.META.get('REMOTE_ADDR'),
+        #     description=f"{request.user.username} viewed audit logs",
+        #     signature_meaning="Audit logs viewed electronically"
+        # )
+
+        # return Response(
+        #     serializer.data,
+        #     status=200
+        # )

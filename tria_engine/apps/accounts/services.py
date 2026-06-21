@@ -7,6 +7,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import password_changed, validate_password
 from django.utils import timezone
+from django.contrib.auth import authenticate, login
 
 from .audit import log_audit_event
 from .models import PasswordResetToken, LoginOTP, UploadedDocument, AuditLog, UploadForm, UploadLog
@@ -22,6 +23,203 @@ from .file_validators import (
 )
 
 User = get_user_model()
+
+# =====================================================
+# API VALIDATION CHANGE:
+# Rate Limiting validation service
+# Checks request count against configured threshold.
+# =====================================================
+
+def validate_rate_limit(
+    current_request_count,
+    threshold,
+    retry_after_seconds
+):
+    if current_request_count > threshold:
+        return {
+            "message": "Rate limit exceeded",
+            "threshold": threshold,
+            "retry_after_seconds": retry_after_seconds,
+        }, 429
+
+    return None, None
+
+
+# API VALIDATION CHANGE: Central endpoint availability validation for correct
+# method and headers. URL correctness is confirmed by Django before a view is
+# reached; this service validates the resolved endpoint request details.
+def validate_api_endpoint_availability(
+    *,
+    request,
+    allowed_methods,
+    requires_auth=False,
+    allowed_content_types=None,
+    body_required_methods=None,
+    body_forbidden_methods=None,
+):
+    from django.conf import settings
+    from rest_framework.exceptions import ValidationError
+
+    from .serializers import EndpointAvailabilitySerializer
+
+    method = request.method.upper()
+    allowed_methods = [
+        allowed_method.upper()
+        for allowed_method in allowed_methods
+    ]
+    # API VALIDATION CHANGE: Server-side HTTP method behavior rules for
+    # GET, POST, PUT, PATCH, and DELETE.
+    default_body_required_methods = {"POST", "PUT", "PATCH"}
+    if body_required_methods is None:
+        body_required_methods = default_body_required_methods
+
+    body_required_methods = {
+        method_name.upper()
+        for method_name in body_required_methods
+    }
+
+    default_body_forbidden_methods = {"GET", "DELETE"}
+    if body_forbidden_methods is None:
+        body_forbidden_methods = default_body_forbidden_methods
+
+    body_forbidden_methods = {
+        method_name.upper()
+        for method_name in body_forbidden_methods
+    }
+    content_length = request.META.get("CONTENT_LENGTH")
+    has_request_body = bool(
+        content_length and
+        content_length != "0"
+    )
+    method_requires_body = method in body_required_methods
+    method_allows_body = method not in body_forbidden_methods
+    requires_auth_header = requires_auth and method != "OPTIONS"
+    session_cookie_name = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
+    request_user = getattr(request, "user", None)
+
+    serializer = EndpointAvailabilitySerializer(
+        data={
+            "path": request.path,
+            "method": method,
+            "allowed_methods": allowed_methods,
+            "supported_behavior_methods": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+            ],
+            "method_requires_body": method_requires_body,
+            "has_request_body": has_request_body,
+            "method_allows_body": method_allows_body,
+            "content_type": getattr(request, "content_type", None),
+            "requires_auth": requires_auth_header,
+            "has_auth_header": bool(
+                request.META.get("HTTP_AUTHORIZATION")
+            ),
+            "has_session_cookie": bool(
+                request.COOKIES.get(session_cookie_name)
+            ),
+            "has_authenticated_user": bool(
+                getattr(request_user, "is_authenticated", False)
+            ),
+            "has_resolver_match": bool(
+                getattr(request, "resolver_match", None)
+            ),
+            "requires_body_header": method_requires_body,
+            "allowed_content_types": allowed_content_types or [
+                "application/json",
+                "multipart/form-data",
+                "application/x-www-form-urlencoded",
+            ],
+        }
+    )
+
+    try:
+        serializer.is_valid(raise_exception=True)
+    except ValidationError:
+        status_code = 405 if method not in allowed_methods else 400
+        return serializer.errors, status_code
+
+    return None, None
+
+
+# API VALIDATION CHANGE: Shared request-schema validation response for required
+# fields, optional fields, and serializer data types.
+def validate_api_request_schema(serializer):
+    if serializer.is_valid():
+        return None, None
+
+    request_schema = {}
+    if hasattr(serializer, "get_request_schema"):
+        request_schema = serializer.get_request_schema()
+
+    return {
+        "message": "Request schema validation failed",
+        "request_schema": request_schema,
+        "errors": serializer.errors,
+    }, 400
+
+
+# API VALIDATION CHANGE: Shared response-schema validation for correct response
+# structure, fields, and data types before sending API responses.
+def validate_api_response_schema(response_data, expected_schema=None):
+    from .serializers import ResponseSchemaValidationSerializer
+
+    def infer_type(value):
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        if isinstance(value, str):
+            return "str"
+        if isinstance(value, dict):
+            return "dict"
+        if isinstance(value, list):
+            return "list"
+        return type(value).__name__
+
+    def infer_schema(value):
+        value_type = infer_type(value)
+        schema = {"type": value_type}
+
+        if isinstance(value, dict):
+            schema["required_fields"] = list(value.keys())
+            schema["fields"] = {
+                key: infer_schema(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, list):
+            schema["item_schema"] = (
+                infer_schema(value[0])
+                if value
+                else {"type": "any"}
+            )
+
+        return schema
+
+    observed_schema = infer_schema(response_data)
+    serializer = ResponseSchemaValidationSerializer(
+        data={
+            "response_data": response_data,
+            "expected_schema": expected_schema or {},
+        }
+    )
+
+    if serializer.is_valid():
+        return None, observed_schema
+
+    return {
+        "message": "Response schema validation failed",
+        "response_schema": expected_schema,
+        "observed_schema": observed_schema,
+        "errors": serializer.errors,
+    }, observed_schema
 
 
 def _security_setting(name, default):
@@ -136,6 +334,7 @@ def create_user(validated_data):
     user.set_password(validated_data["password"])
     _set_password_metadata(user)
     user.save()
+    
     password_changed(validated_data["password"], user=user)
     return user
 
@@ -144,14 +343,31 @@ def get_all_users_service():
     return User.objects.all()
 
 
+
 def login_user(email, password, request=None):
-    user = authenticate(request=request, username=email, password=password)
+
+    user = authenticate(
+        request=request,
+        username=email,
+        password=password
+    )
+
     if user is None:
-        log_audit_event("login_failed", request=request, status="failed", details={"email": email})
+        log_audit_event(
+            "login_failed",
+            request=request,
+            status="failed",
+            details={"email": email}
+        )
         return None, "Invalid credentials"
 
     if not user.is_active:
-        log_audit_event("login_inactive_user", user=user, request=request, status="failed")
+        log_audit_event(
+            "login_inactive_user",
+            user=user,
+            request=request,
+            status="failed"
+        )
         return None, "User account is inactive"
 
     if getattr(user, "must_change_password", False):
@@ -161,7 +377,29 @@ def login_user(email, password, request=None):
             request=request,
             status="failed",
         )
-        return None, "Password reset required due to a security event. Please reset your password."
+        return None, (
+            "Password reset required due to a security event. "
+            "Please reset your password."
+        )
+
+    # API VALIDATION CHANGE:
+    # Create authenticated session for SessionAuthentication.
+    if request:
+        login(
+            request,
+            user,
+            backend="django.contrib.auth.backends.ModelBackend"
+        )
+        
+       # print("LOGIN SUCCESS:", user.username)
+        #print("SETTING LAST_ACTIVITY:", timezone.now())
+        # API VALIDATION CHANGE:
+        # Update last activity after successful login.
+        user.last_activity = timezone.now()
+
+        user.save(
+            update_fields=["last_activity"]
+        )
 
     return user, None
 
@@ -534,9 +772,8 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
                 "document_number": (
                     document_number
                 ),
-                "file_name": (
-                    document.original_name
-                ),
+                # "file_name": (
+                #     document.original_name),
             },
         )
 
@@ -569,9 +806,29 @@ def delete_document_by_number(*, user_id, document_number, user, request=None):
             "to delete this document"
         )
 
+    # file_name = document.original_name
+
+    # document.delete()
+    
     file_name = document.original_name
 
+    # =====================================================
+    # DATABASE VALIDATION CHANGE:
+    # Hard delete validation
+    # Verify record is removed from database.
+    # =====================================================
+
+    document_id = document.id
+
     document.delete()
+
+    if UploadedDocument.objects.filter(
+        id=document_id
+    ).exists():
+
+        return None, (
+            "Document deletion validation failed"
+        )
 
     log_audit_event(
         "document_deleted",
@@ -844,4 +1101,4 @@ def get_uploaded_form_service(
                 "%Y-%m-%d %H:%M:%S"
             )
         ),
-    }, None
+    }

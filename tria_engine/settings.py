@@ -102,6 +102,18 @@ AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
 ]
 
+# REST_FRAMEWORK = {
+#     "DEFAULT_AUTHENTICATION_CLASSES": [
+#         "rest_framework.authentication.SessionAuthentication",
+#     ],
+#     "DEFAULT_PERMISSION_CLASSES": [
+#         "rest_framework.permissions.IsAuthenticated",
+#     ],
+#     "DEFAULT_RENDERER_CLASSES": [
+#         "rest_framework.renderers.JSONRenderer",
+#     ],
+# }
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
@@ -129,6 +141,7 @@ TRIA_SECURITY = {
     "PASSWORD_MAX_AGE_DAYS": int(os.environ.get("TRIA_PASSWORD_MAX_AGE_DAYS", 90)),
     "TOKEN_EXPIRY_MINUTES": int(os.environ.get("TRIA_TOKEN_EXPIRY_MINUTES", 10)),
     "EXPOSE_OTP_IN_RESPONSE": os.environ.get("TRIA_EXPOSE_OTP_IN_RESPONSE", "true").lower() == "true",
+    
 }
 
 
@@ -157,7 +170,7 @@ SECURE_SSL_REDIRECT = False
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 CSRF_COOKIE_HTTPONLY = False
-CSRF_TRUSTED_ORIGINS = ["http://127.0.0.1:9000"]
+CSRF_TRUSTED_ORIGINS = ["http://127.0.0.1:9000", "http://127.0.0.1:8000"]  
 SECURE_HSTS_SECONDS = 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = False
 SECURE_HSTS_PRELOAD = False
