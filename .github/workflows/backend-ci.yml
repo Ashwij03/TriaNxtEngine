@@ -369,8 +369,8 @@ jobs:
   staging-integration-tests:
     name: "Staging: Integration Tests"
     runs-on: ubuntu-latest
-    needs: [liquibase-staging]
-    if: always() && (needs.liquibase-staging.result == 'success' || needs.liquibase-staging.result == 'skipped')
+    needs: [staging-deploy, liquibase-staging]
+    if: always() && needs.staging-deploy.result == 'success' && (needs.liquibase-staging.result == 'success' || needs.liquibase-staging.result == 'skipped')
     env:
       STAGING_BASE_URL: ${{ secrets.STAGING_URL }}
     steps:
@@ -423,7 +423,7 @@ jobs:
     name: Smoke Tests (staging)
     runs-on: ubuntu-latest
     needs: [staging-integration-tests]
-    if: always() && (needs.staging-integration-tests.result == 'success' || needs.staging-integration-tests.result == 'skipped')
+    if: needs.staging-integration-tests.result == 'success'
     env:
       STAGING_URL: ${{ secrets.STAGING_URL }}
     steps:
@@ -494,7 +494,7 @@ jobs:
     name: "Security: DAST (OWASP ZAP)"
     runs-on: ubuntu-latest
     needs: [smoke-tests]
-    if: always() && (needs.smoke-tests.result == 'success' || needs.smoke-tests.result == 'skipped')
+    if: needs.smoke-tests.result == 'success'
     env:
       STAGING_URL: ${{ secrets.STAGING_URL }}
     steps:
@@ -618,7 +618,7 @@ jobs:
     name: "Production: Manual Approval Gate"
     runs-on: ubuntu-latest
     needs: [dast, docker-build-and-scan]
-    if: always() && (needs.dast.result == 'success' || needs.dast.result == 'skipped') && needs.docker-build-and-scan.result == 'success'
+    if: needs.dast.result == 'success' && needs.docker-build-and-scan.result == 'success'
     environment:
       name: production
     steps:
