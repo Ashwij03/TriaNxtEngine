@@ -297,7 +297,6 @@ jobs:
     needs: [docker-build-and-scan]
     environment:
       name: staging
-      url: ${{ secrets.STAGING_URL }}
     env:
       IMAGE_TAG: ${{ needs.docker-build-and-scan.outputs.image-tag }}
     steps:
@@ -714,7 +713,6 @@ jobs:
     if: always() && (needs.liquibase-production.result == 'success' || needs.liquibase-production.result == 'skipped') && needs.docker-build-and-scan.result == 'success'
     environment:
       name: production
-      url: ${{ secrets.PROD_URL }}
     env:
       IMAGE_TAG: ${{ needs.docker-build-and-scan.outputs.image-tag }}
     steps:
