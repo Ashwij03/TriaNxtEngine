@@ -1,0 +1,9 @@
+.git
+.vscode
+.settings
+.project
+.pydevproject
+__pycache__
+*.pyc
+hipaa_audit.log
+.env
