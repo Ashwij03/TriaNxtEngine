@@ -132,7 +132,6 @@ jobs:
     if: inputs.environment == 'staging'
     environment:
       name: staging
-      url: ${{ secrets.STAGING_URL }}
     steps:
       - name: Download rollback image artifact
         uses: actions/download-artifact@v4
