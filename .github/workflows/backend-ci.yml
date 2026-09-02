@@ -254,6 +254,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: "trianxt-engine:${{ steps.meta.outputs.image-tag }}"
+          skip-setup-trivy: true
           format: "table"
           severity: "CRITICAL,HIGH"
           ignore-unfixed: true
@@ -263,6 +264,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: "trianxt-engine:${{ steps.meta.outputs.image-tag }}"
+          skip-setup-trivy: true
           format: "json"
           output: "trivy-report.json"
           severity: "CRITICAL,HIGH,MEDIUM"
