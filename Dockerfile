@@ -13,6 +13,7 @@ WORKDIR /app
 
 # Install dependencies first for better layer caching.
 COPY tria_engine/requirements/ tria_engine/requirements/
+RUN pip install --no-cache-dir --upgrade "setuptools>=80.10.1" "wheel>=0.46.2"
 RUN pip install --no-cache-dir -r tria_engine/requirements/prod.txt
 
 COPY . .
