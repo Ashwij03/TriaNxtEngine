@@ -1,0 +1,339 @@
+name: "Backend: Rollback"
+
+# Task 5 — Rollback Workflow
+#
+# Deploys a previous version of the backend to staging or production.
+#
+# Architecture:
+#   Until the Task 4 container registry is available, rollback rebuilds
+#   the Docker image from the specified commit SHA. This is NOT
+#   byte-for-byte identical to the original CI build (different build
+#   context, timestamps, etc.). Once the registry is available, rollback
+#   should pull the original immutable image tagged with that SHA
+#   instead of rebuilding.
+#
+# Usage:
+#   1. Go to Actions → "Backend: Rollback"
+#   2. Click "Run workflow"
+#   3. Enter the 40-character git commit SHA to roll back to
+#   4. Choose target environment (staging or production)
+#   5. Click "Run workflow"
+#
+# What this does:
+#   - Validates the input SHA format
+#   - Checks out the target commit
+#   - Builds the Docker image from that commit's source
+#   - Deploys the image to the target environment
+#   - Verifies the rollback via health checks
+#
+# Limitations:
+#   - This rebuilds the image from source. A container registry
+#     (Task 4) would allow pulling the exact immutable image instead.
+#   - Database rollbacks are NOT handled. Coordinate with Task 7.
+#   - Terraform/infrastructure rollbacks are NOT handled. Coordinate
+#     with Task 4.
+#   - Production rollback requires manual approval via the GitHub
+#     Actions "production" environment gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target-sha:
+        description: "Git commit SHA to roll back to (40 characters)"
+        required: true
+        type: string
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ==================================================================
+  # INPUT VALIDATION
+  # ==================================================================
+  validate-input:
+    name: Validate rollback input
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate SHA format
+        run: |
+          SHA="${{ inputs.target-sha }}"
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: target-sha must be a valid 40-character lowercase hex git commit SHA"
+            echo "Got: '$SHA'"
+            exit 1
+          fi
+          echo "Valid target SHA: $SHA"
+
+      - name: Verify commit exists in repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target-sha }}
+          fetch-depth: 1
+          fetch-tags: false
+
+      - name: Confirm checkout succeeded
+        run: |
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          EXPECTED="${{ inputs.target-sha }}"
+          if [ "$ACTUAL_SHA" != "$EXPECTED" ]; then
+            echo "ERROR: checked out $ACTUAL_SHA but expected $EXPECTED"
+            exit 1
+          fi
+          echo "Confirmed: commit $ACTUAL_SHA is available"
+
+  # ==================================================================
+  # BUILD IMAGE FROM TARGET COMMIT
+  # ==================================================================
+  build-rollback-image:
+    name: "Build: image from target commit"
+    runs-on: ubuntu-latest
+    needs: [validate-input]
+    outputs:
+      image-tag: ${{ inputs.target-sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target-sha }}
+          fetch-depth: 1
+
+      - name: Build Docker image from target commit
+        run: |
+          echo "Building trianxt-engine:${{ inputs.target-sha }} from commit ${{ inputs.target-sha }}"
+          docker build -t "trianxt-engine:${{ inputs.target-sha }}" .
+
+      - name: Save Docker image as artifact
+        run: |
+          docker save "trianxt-engine:${{ inputs.target-sha }}" \
+            | gzip > "trianxt-engine-${{ inputs.target-sha }}.tar.gz"
+          echo "Image artifact size: $(du -h trianxt-engine-${{ inputs.target-sha }}.tar.gz | cut -f1)"
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-image-${{ inputs.target-sha }}
+          path: trianxt-engine-${{ inputs.target-sha }}.tar.gz
+          retention-days: 7
+
+  # ==================================================================
+  # ROLLBACK — STAGING
+  # ==================================================================
+  rollback-staging:
+    name: "Rollback: Staging"
+    runs-on: ubuntu-latest
+    needs: [build-rollback-image]
+    if: inputs.environment == 'staging'
+    environment:
+      name: staging
+      url: ${{ secrets.STAGING_URL }}
+    steps:
+      - name: Download rollback image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rollback-image-${{ inputs.target-sha }}
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.STAGING_SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy rollback to staging
+        run: |
+          echo "Rolling back staging to trianxt-engine:${{ inputs.target-sha }}"
+
+          scp -i ~/.ssh/deploy_key \
+            "trianxt-engine-${{ inputs.target-sha }}.tar.gz" \
+            "deploy@${{ secrets.STAGING_SSH_HOST }}:${{ secrets.STAGING_DEPLOY_PATH }}/"
+
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.STAGING_SSH_HOST }} << ROLLBACK_SCRIPT
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+
+            CURRENT=\$(docker inspect --format='{{.Config.Image}}' ctms-backend-staging 2>/dev/null | cut -d: -f2 || echo "none")
+            echo "Previous version: \${CURRENT}"
+            echo "Rolling back to: ${{ inputs.target-sha }}"
+
+            docker load < "trianxt-engine-${{ inputs.target-sha }}.tar.gz"
+
+            docker stop ctms-backend-staging 2>/dev/null || true
+            docker rm ctms-backend-staging 2>/dev/null || true
+
+            docker run -d \
+              --name ctms-backend-staging \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e DJANGO_ENV=uat \
+              -e DJANGO_SECRET_KEY="\${{ secrets.DJANGO_SECRET_KEY_STAGING }}" \
+              -e DJANGO_ALLOWED_HOSTS="\${{ secrets.STAGING_URL }}" \
+              -e CTMS_ENCRYPTION_KEY="\${{ secrets.CTMS_ENCRYPTION_KEY_STAGING }}" \
+              -e DATABASE_URL="postgresql://\${{ secrets.STAGING_DB_USER }}:\${{ secrets.STAGING_DB_PASSWORD }}@\${{ secrets.STAGING_DB_HOST }}/\${{ secrets.STAGING_DB_NAME }}" \
+              "trianxt-engine:${{ inputs.target-sha }}"
+
+            sleep 10
+            docker ps --filter "name=ctms-backend-staging" --format "{{.Status}}"
+          ROLLBACK_SCRIPT
+
+      - name: Verify rollback health
+        id: verify_rollback_health
+        run: |
+          for i in 1 2 3 4 5; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 30 "${{ secrets.STAGING_URL }}/admin/" || echo "000")
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then
+              echo "PASS: Staging rollback verified (HTTP ${HTTP_STATUS})"
+              exit 0
+            fi
+            echo "Attempt $i/5: HTTP ${HTTP_STATUS} — retrying in 10s..."
+            sleep 10
+          done
+          echo "FAIL: Staging health check failed after rollback"
+          exit 1
+
+      - name: Rollback summary
+        if: always()
+        run: |
+          echo "============================================"
+          echo "STAGING ROLLBACK RESULT"
+          echo "============================================"
+          echo "Target SHA: ${{ inputs.target-sha }}"
+          echo "Environment: staging"
+          echo "URL: ${{ secrets.STAGING_URL }}"
+          echo "Status: ${{ steps.verify_rollback_health.outcome }}"
+          echo "============================================"
+
+  # ==================================================================
+  # ROLLBACK — PRODUCTION (requires environment approval)
+  # ==================================================================
+  rollback-production:
+    name: "Rollback: Production"
+    runs-on: ubuntu-latest
+    needs: [build-rollback-image]
+    if: inputs.environment == 'production'
+    environment:
+      name: production
+    steps:
+      - name: Download rollback image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rollback-image-${{ inputs.target-sha }}
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.PROD_SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy rollback to production
+        run: |
+          echo "Rolling back production to trianxt-engine:${{ inputs.target-sha }}"
+
+          scp -i ~/.ssh/deploy_key \
+            "trianxt-engine-${{ inputs.target-sha }}.tar.gz" \
+            "deploy@${{ secrets.PROD_SSH_HOST }}:${{ secrets.PROD_DEPLOY_PATH }}/"
+
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.PROD_SSH_HOST }} << ROLLBACK_SCRIPT
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+
+            CURRENT=\$(docker inspect --format='{{.Config.Image}}' ctms-backend-prod 2>/dev/null | cut -d: -f2 || echo "none")
+            echo "Previous version: \${CURRENT}"
+            echo "Rolling back to: ${{ inputs.target-sha }}"
+
+            docker load < "trianxt-engine-${{ inputs.target-sha }}.tar.gz"
+
+            docker stop ctms-backend-prod 2>/dev/null || true
+            docker rm ctms-backend-prod 2>/dev/null || true
+
+            docker run -d \
+              --name ctms-backend-prod \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e DJANGO_ENV=production \
+              -e DJANGO_SECRET_KEY="\${{ secrets.DJANGO_SECRET_KEY_PROD }}" \
+              -e DJANGO_ALLOWED_HOSTS="\${{ secrets.PROD_URL }}" \
+              -e CTMS_ENCRYPTION_KEY="\${{ secrets.CTMS_ENCRYPTION_KEY_PROD }}" \
+              -e DATABASE_URL="postgresql://\${{ secrets.PROD_DB_USER }}:\${{ secrets.PROD_DB_PASSWORD }}@\${{ secrets.PROD_DB_HOST }}/\${{ secrets.PROD_DB_NAME }}" \
+              "trianxt-engine:${{ inputs.target-sha }}"
+
+            sleep 15
+            docker ps --filter "name=ctms-backend-prod" --format "{{.Status}}"
+          ROLLBACK_SCRIPT
+
+      - name: Verify rollback health
+        id: verify_rollback_health
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 30 "${{ secrets.PROD_URL }}/admin/" || echo "000")
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then
+              echo "PASS: Production rollback verified (HTTP ${HTTP_STATUS})"
+              exit 0
+            fi
+            echo "Attempt $i/10: HTTP ${HTTP_STATUS} — retrying in 15s..."
+            sleep 15
+          done
+          echo "CRITICAL: Production health check failed after rollback"
+          exit 1
+
+      - name: Rollback summary
+        if: always()
+        run: |
+          echo "============================================"
+          echo "PRODUCTION ROLLBACK RESULT"
+          echo "============================================"
+          echo "Target SHA: ${{ inputs.target-sha }}"
+          echo "Environment: production"
+          echo "URL: ${{ secrets.PROD_URL }}"
+          echo "Status: ${{ steps.verify_rollback_health.outcome }}"
+          echo "============================================"
+
+  # ==================================================================
+  # ROLLBACK NOTIFICATION
+  # ==================================================================
+  notify-rollback:
+    name: "Rollback: Notification"
+    runs-on: ubuntu-latest
+    needs: [rollback-staging, rollback-production]
+    if: always()
+    steps:
+      - name: Determine rollback result
+        id: result
+        run: |
+          if [ "${{ needs.rollback-staging.result }}" = "success" ] || [ "${{ needs.rollback-production.result }}" = "success" ]; then
+            echo "status=SUCCESS" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.rollback-staging.result }}" = "failure" ] || [ "${{ needs.rollback-production.result }}" = "failure" ]; then
+            echo "status=FAILED" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=SKIPPED" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Console notification
+        run: |
+          echo "============================================"
+          echo "ROLLBACK NOTIFICATION"
+          echo "============================================"
+          echo "Action: Rollback"
+          echo "Target: ${{ inputs.environment }}"
+          echo "Version: ${{ inputs.target-sha }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Status: ${{ steps.result.outputs.status }}"
+          echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "============================================"
+
+      - name: Notify Slack
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: '{"text":"Rollback ${{ steps.result.outputs.status }}: ${{ inputs.environment }} to ${{ inputs.target-sha }} by ${{ github.actor }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
