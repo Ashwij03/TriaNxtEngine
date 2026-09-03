@@ -19,7 +19,7 @@ from drf_yasg import openapi
 from urllib3 import request
 
 from .serializers import (
-    UserListSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
+    UserListSerializer, UserProfileSerializer, RegisterSerializer, LoginSerializer, LoginMFASerializer,VerifyLoginOTPSerializer, ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
     IntegritySerializer,
     DocumentUploadSerializer, UploadedDocumentSerializer,
     ProfilePhotoUploadSerializer, UploadFormSerializer, DeleteUploadFormSerializer, ViewUploadFormSerializer, AuditLogSerializer, PaginationSerializer, FilterSerializer, SortingSerializer
@@ -199,6 +199,32 @@ class RegisterAPI(APIView):
                     status=status_code
                 )
 
+            # =====================================================
+            # SUBSCRIPTION ENFORCEMENT (billing app):
+            # Registration into an existing organization is this backend's
+            # real "user joins org / gets approved onto the org" capacity-
+            # changing path, so the billing seat guard runs here — the
+            # server-side analogue of subscriptionGuard.js's
+            # assertCanApproveUser(). An org whose subscription is not
+            # Active, or that is at its maxUsers cap, cannot grow. The very
+            # first user of an organization (its founder/bootstrap) is
+            # exempt so a brand-new org can always be created.
+            # =====================================================
+            if User.objects.filter(
+                organization=serializer.validated_data["organization"]
+            ).exists():
+                from tria_engine.apps.billing import services as billing_services
+
+                try:
+                    billing_services.assert_can_approve_user(
+                        serializer.validated_data["organization"]
+                    )
+                except billing_services.SubscriptionLimitError as exc:
+                    return Response(
+                        {"message": str(exc)},
+                        status=403,
+                    )
+
             user = serializer.save()
 
             create_audit_log(
@@ -324,6 +350,30 @@ class UserListAPI(APIView):
         # return Response(UserListSerializer(users, many=True).data)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
+class UserProfileAPI(APIView):
+    """GET/PATCH /api/accounts/profile/ — the signed-in user's own profile,
+    including their pincode. Organization/role/username/email are
+    read-only here; only pincode (and any other self-editable field the
+    product later wants) can be updated through this endpoint. Pincode
+    cannot be cleared to blank once set — see
+    UserProfileSerializer.validate_pincode."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = UserProfileSerializer(request.user)
+        return Response(serializer.data, status=200)
+
+    def patch(self, request):
+        serializer = UserProfileSerializer(
+            request.user, data=request.data, partial=True
+        )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+        serializer.save()
+        return Response(serializer.data, status=200)
+
 
 @method_decorator(csrf_exempt, name='dispatch')
 class LoginAPI(APIView):
@@ -381,6 +431,15 @@ class LoginAPI(APIView):
                     description=f"{user.username} logged into system",
                     signature_meaning="User electronically signed for login"
                 )
+
+            # SUBSCRIPTION SETTLE (billing app): recompute the org's
+            # subscription state on login (persist EXPIRED when the window
+            # lapsed / attempt auto-renewal) — fails soft by contract and
+            # never blocks the login response.
+            if user.organization_id:
+                from tria_engine.apps.billing import services as billing_services
+
+                billing_services.settle_subscription_on_login(user.organization)
         else:
             create_audit_log(
                user=None,
