@@ -20,10 +20,7 @@ django-filter>=23.5
 # Swagger
 drf_yasg
 
-python -m pip install "django[argon2]"
-
-
-python -m pip install "pillow"
-
-
-pip install cryptography
+# Password hashing / images / crypto
+django[argon2]
+pillow
+cryptography
