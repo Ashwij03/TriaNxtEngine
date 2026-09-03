@@ -1,0 +1,12 @@
+environment           = "uat"
+instance_class        = "db.t3.medium"
+allocated_storage     = 50
+storage_type          = "gp3"
+iops                  = 0
+multi_az              = false
+backup_retention_days = 7
+max_connections       = "200"
+db_username           = "ctms_admin"
+db_subnet_group_name  = "<from Section 4 VPC work>"
+vpc_id                = "<from Section 4 VPC work>"
+app_security_group_id = "<from Section 4 VPC work>"

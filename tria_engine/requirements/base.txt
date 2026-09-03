@@ -3,6 +3,7 @@ djangorestframework>=3.14
 
 # Database
 psycopg2-binary>=2.9
+dj-database-url
 
 # Environment variables
 python-dotenv>=1.0
@@ -20,10 +21,7 @@ django-filter>=23.5
 # Swagger
 drf_yasg
 
-python -m pip install "django[argon2]"
-
-
-python -m pip install "pillow"
-
-
-pip install cryptography
+# Auth / security
+django[argon2]
+pillow
+cryptography
