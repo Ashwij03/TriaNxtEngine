@@ -12,3 +12,4 @@ tria_engine/apps/organizations/__pycache__/
 
 .env
 .venv/
+.env.example
