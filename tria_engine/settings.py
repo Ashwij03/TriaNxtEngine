@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "drf_yasg",
     "tria_engine.apps.accounts.apps.AccountsConfig",
     "tria_engine.apps.organizations.apps.OrganizationsConfig",
+    "tria_engine.apps.licensing.apps.LicensingConfig",
 ]
 
 MIDDLEWARE = [
