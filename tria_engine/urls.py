@@ -22,6 +22,14 @@ schema_view = get_schema_view(
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/accounts/", include("tria_engine.apps.accounts.urls")),
+    path("api/licensing/", include("tria_engine.apps.licensing.urls")),
+    # NOTE: organizations/urls.py existed but was never wired in before this
+    # change — the monitoring "site" picker needs GET /api/organizations/ to
+    # list sites, so it's routed here alongside it.
+    path("api/organizations/", include("tria_engine.apps.organizations.urls")),
+    path("api/monitoring/", include("tria_engine.apps.monitoring.urls")),
+    path("api/subscriptions/", include("tria_engine.apps.subscriptions.urls")),
+    path("api/billing/", include("tria_engine.apps.billing.urls")),
     re_path(r"^swagger(?P<format>\.json|\.yaml)$", schema_view.without_ui(cache_timeout=0), name="schema-json"),
     path("swagger/", schema_view.with_ui("swagger", cache_timeout=0), name="schema-swagger-ui"),
     path("redoc/", schema_view.with_ui("redoc", cache_timeout=0), name="schema-redoc"),
