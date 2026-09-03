@@ -22,6 +22,7 @@ django-filter>=23.5
 drf_yasg
 
 # Auth / security
+# Password hashing / images / crypto
 django[argon2]
 pillow
 cryptography
