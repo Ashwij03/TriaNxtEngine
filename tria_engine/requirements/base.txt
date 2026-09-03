@@ -3,6 +3,7 @@ djangorestframework>=3.14
 
 # Database
 psycopg2-binary>=2.9
+dj-database-url
 
 # Environment variables
 python-dotenv>=1.0
@@ -20,6 +21,7 @@ django-filter>=23.5
 # Swagger
 drf_yasg
 
+# Auth / security
 # Password hashing / images / crypto
 django[argon2]
 pillow
