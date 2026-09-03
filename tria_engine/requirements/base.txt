@@ -1,8 +1,9 @@
-Django>=4.2,<5.0
+Django>=5.2,<5.3
 djangorestframework>=3.14
 
 # Database
 psycopg2-binary>=2.9
+dj-database-url
 
 # Environment variables
 python-dotenv>=1.0
@@ -20,7 +21,18 @@ django-filter>=23.5
 # Swagger
 drf_yasg
 
-# Password hashing / images / crypto
+# Password hashing (argon2)
+argon2-cffi>=21.2
+
+# Auth / security
 django[argon2]
+
+# Image handling
 pillow
+
+# Field-level encryption
 cryptography
+
+# Payments (billing app) — official Razorpay SDK. Never hand-roll HMAC or
+# order/payment calls against an undocumented API surface.
+razorpay>=1.4

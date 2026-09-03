@@ -1,9 +1,17 @@
 .git
+.github
 .vscode
 .settings
 .project
 .pydevproject
-__pycache__
+__pycache__/
 *.pyc
-hipaa_audit.log
+db.sqlite3
+media/
 .env
+.env.*
+.pytest_cache/
+.coverage
+htmlcov/
+# Contains real user emails/IPs from local testing — must never end up in an image.
+hipaa_audit.log
