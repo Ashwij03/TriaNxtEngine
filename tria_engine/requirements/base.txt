@@ -24,6 +24,9 @@ drf_yasg
 # Password hashing (argon2)
 argon2-cffi>=21.2
 
+# Auth / security
+django[argon2]
+
 # Image handling
 pillow
 
