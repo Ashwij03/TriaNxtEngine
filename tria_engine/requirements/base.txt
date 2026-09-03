@@ -3,6 +3,7 @@ djangorestframework>=3.14
 
 # Database
 psycopg2-binary>=2.9
+dj-database-url
 
 # Environment variables
 python-dotenv>=1.0
@@ -22,6 +23,9 @@ drf_yasg
 
 # Password hashing (argon2)
 argon2-cffi>=21.2
+
+# Auth / security
+django[argon2]
 
 # Image handling
 pillow
