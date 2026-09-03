@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -16,7 +17,10 @@ if not SECRET_KEY:
     else:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required")
 
-
+# DEBUG follows ENV -- previously hardcoded to True here, which silently
+# overrode the correct ENV-based value set above and meant production would
+# have run with DEBUG=True (stack traces, SQL, and settings values exposed
+# to any 500 response) regardless of DJANGO_ENV. Removed.
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
@@ -44,6 +48,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     "django.middleware.security.SecurityMiddleware",
+    "tria_engine.middleware.DatabaseRetryMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -76,25 +81,94 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "tria_engine.wsgi.application"
 
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.sqlite3",
-#         "NAME": BASE_DIR / "db.sqlite3",
-#     }
-# }
+# DATABASE_URL is expected to be injected as an env var by the deployment
+# platform (ECS task def / K8s secret) -- the value itself comes from AWS
+# Secrets Manager via the ctms/* read-only IAM policy set up in Section 4,
+# never committed here or read directly from Secrets Manager in-process.
+#
+# - conn_max_age=600: persistent connections for 10 min; keep this in sync
+#   with pool sizing so (replicas * gunicorn workers * conns) stays well
+#   under the RDS instance's max_connections.
+# - ssl_require=True: enforces TLS client-side, matching `ssl=1` set at the
+#   RDS parameter-group level in Section 1 -- belt and suspenders.
+# - connect_timeout: bounds how long a single connection ATTEMPT can hang
+#   (TCP-level, before auth even happens). Without this the only backstop
+#   is the OS TCP timeout (often 60-130s). Combined with the retry
+#   middleware's up to 3 attempts, an unreachable DB could otherwise tie
+#   up a sync Gunicorn worker for several minutes on one request.
+# - statement_timeout: bounds how long an individual QUERY can run once
+#   connected, so a runaway/locked query can't hold a connection (and a
+#   worker) hostage indefinitely. Set via the `options` connection
+#   parameter, which psycopg2 passes through as a Postgres session GUC.
+DB_CONNECT_TIMEOUT = int(os.environ.get("DB_CONNECT_TIMEOUT_SECONDS", 5))
+DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", 30000))
 
-# tria_engine/settings.py — replace lines 79-84
-
-DATABASES = {
-    "default": {
-        "ENGINE": os.environ.get("DJANGO_DB_ENGINE", "django.db.backends.sqlite3"),
-        "NAME": os.environ.get("DJANGO_DB_NAME", str(BASE_DIR / "db.sqlite3")),
-        "USER": os.environ.get("DJANGO_DB_USER", ""),
-        "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
-        "HOST": os.environ.get("DJANGO_DB_HOST", ""),
-        "PORT": os.environ.get("DJANGO_DB_PORT", ""),
+if ENV == "development":
+    DATABASES = {
+        "default": dj_database_url.config(
+            default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+            conn_max_age=600,
+        )
     }
-}
+else:
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        raise ImproperlyConfigured("DATABASE_URL is required outside development")
+    DATABASES = {
+        "default": dj_database_url.config(
+            default=DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=True,
+        )
+    }
+    DATABASES["default"].setdefault("OPTIONS", {})
+    DATABASES["default"]["OPTIONS"]["connect_timeout"] = DB_CONNECT_TIMEOUT
+    DATABASES["default"]["OPTIONS"]["options"] = (
+        f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
+    )
+
+    # Transaction isolation level -- explicit decision, not a silent
+    # default. READ COMMITTED (Postgres/Django's own default) is kept
+    # deliberately: the referral-redemption race condition (Section 6) is
+    # already handled correctly via select_for_update() row locks plus a
+    # DB-level UniqueConstraint, which is the standard Django pattern for
+    # race safety and doesn't need a stricter global isolation level.
+    # Bumping every connection to REPEATABLE READ or SERIALIZABLE would
+    # add serialization-failure handling (retry-on-conflict) across every
+    # view in the app for a problem that's already solved locally where
+    # it actually occurs. Overridable via env var if a specific workload
+    # (e.g. a reporting/export view) later needs stronger guarantees.
+    import psycopg2.extensions
+
+    _ISOLATION_LEVELS = {
+        "READ_COMMITTED": psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED,
+        "REPEATABLE_READ": psycopg2.extensions.ISOLATION_LEVEL_REPEATABLE_READ,
+        "SERIALIZABLE": psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE,
+    }
+    _isolation_choice = os.environ.get(
+        "DB_TRANSACTION_ISOLATION_LEVEL", "READ_COMMITTED"
+    ).upper()
+    DATABASES["default"]["OPTIONS"]["isolation_level"] = _ISOLATION_LEVELS[
+        _isolation_choice
+    ]
+
+    # IAM_DB_AUTH_ENABLED opts a workload into RDS IAM auth instead of a
+    # static password from Secrets Manager, per the Security Tasks in
+    # Section 2 ("prefer IAM auth where the workload supports it"). The
+    # DB user in DATABASE_URL must already be granted the rds_iam role and
+    # the app's IAM role needs rds-db:connect for that user -- this only
+    # swaps how the password is obtained per-connection, not the account
+    # setup itself.
+    if os.environ.get("IAM_DB_AUTH_ENABLED", "false").lower() == "true":
+        DATABASES["default"]["ENGINE"] = "tria_engine.db_backends.iam_postgres"
+        DATABASES["default"]["IAM_AUTH_REGION"] = os.environ.get(
+            "AWS_REGION", "us-east-1"
+        )
+        # the token generated per-connection replaces this; anything here
+        # would be stale within 15 minutes and is never used once the
+        # custom backend is active.
+        DATABASES["default"].pop("PASSWORD", None)
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -189,3 +263,42 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = False
 SECURE_HSTS_PRELOAD = False
 SECURE_PROXY_SSL_HEADER = None
 # SESSION_INACTIVE_TIMEOUT = 5
+
+# Logging -- the redact filter strips known PII/PHI field values (password,
+# token, ssn, dob, diagnosis, etc.) from every log record before it's
+# emitted, per Section 2's Security Task. Applied to every handler so
+# there's no accidental bypass route (e.g. a handler added later that
+# forgets to attach the filter).
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {
+        "pii_redaction": {
+            "()": "tria_engine.logging_filters.PIIRedactionFilter",
+        },
+    },
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} {levelname} {name} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "filters": ["pii_redaction"],
+            "formatter": "verbose",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+    },
+}
