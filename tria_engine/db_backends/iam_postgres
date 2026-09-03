@@ -1,0 +1,47 @@
+"""
+Postgres backend that authenticates to RDS using IAM auth tokens instead of
+a static password.
+
+Why this exists: dj_database_url / stock psycopg2 only support a fixed
+PASSWORD in DATABASES. RDS IAM auth tokens are short-lived (expire after
+15 minutes), so the password has to be regenerated at the moment each new
+physical connection is opened -- not once at process startup. With
+CONN_MAX_AGE=600 (10 min) connections are recycled roughly every 10
+minutes anyway, so a freshly-generated token is always used well within
+its validity window.
+
+This only replaces how the PASSWORD is obtained; TLS enforcement
+(sslmode=require) from settings.py OPTIONS still applies -- IAM auth
+requires SSL on RDS regardless.
+
+Requires the DB user to be created with IAM auth granted (rds_iam role)
+and iam_database_authentication_enabled=true on the RDS instance (already
+set in Section 1's Terraform), and the app's IAM role/instance profile to
+have rds-db:connect permission for that user.
+"""
+import boto3
+from django.db.backends.postgresql import base
+
+
+class DatabaseWrapper(base.DatabaseWrapper):
+    def get_connection_params(self):
+        params = super().get_connection_params()
+
+        region = params.pop("iam_auth_region", None) or self.settings_dict.get(
+            "IAM_AUTH_REGION"
+        )
+        if not region:
+            raise base.ImproperlyConfigured(
+                "IAM_AUTH_REGION must be set in DATABASES['default'] "
+                "when using the iam_postgres backend."
+            )
+
+        client = boto3.client("rds", region_name=region)
+        token = client.generate_db_auth_token(
+            DBHostname=params["host"],
+            Port=int(params.get("port", 5432)),
+            DBUsername=params["user"],
+        )
+        # the token IS the password for IAM auth connections
+        params["password"] = token
+        return params
