@@ -328,7 +328,6 @@ def create_user(validated_data):
         last_name=validated_data.get("last_name", ""),
         organization=validated_data.get("organization"),
         role=validated_data.get("role"),
-        pincode=validated_data["pincode"],
     )
 
     validate_password(validated_data["password"], user=user)

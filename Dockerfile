@@ -1,26 +1,58 @@
-# Backend image for TriaNxtEngine (Django).
-FROM python:3.11-slim
-
-RUN groupadd -r django && useradd -r -g django django
-RUN mkdir -p /home/django && chown django:django /home/django
+# Multi-stage build for TriaNXT CTMS Django Engine
+# Stage 1: Build dependencies
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Install dependencies first for better layer caching.
-COPY tria_engine/requirements/ tria_engine/requirements/
-RUN pip install --no-cache-dir --upgrade "setuptools>=80.10.1" "wheel>=0.46.2"
-RUN pip install --no-cache-dir -r tria_engine/requirements/prod.txt
+# Install system dependencies for psycopg2 and argon2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    libffi-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+COPY tria_engine/requirements/prod.txt /tmp/requirements.txt
+COPY tria_engine/requirements/base.txt /tmp/base.txt
+# Also copy base requirements since prod.txt references it
+RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
 
-RUN chown -R django:django /app
+# Stage 2: Production image
+FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 
-    PYTHONUNBUFFERED=1 
-    DJANGO_SETTINGS_MODULE=tria_engine.settings
+# Create non-root user
+RUN groupadd -r trianxt && useradd -r -g trianxt -d /app -s /sbin/nologin trianxt
 
-USER django
+WORKDIR /app
 
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    libffi8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY manage.py /app/
+COPY gunicorn_config.py /app/
+COPY tria_engine/ /app/tria_engine/
+
+# Create necessary directories
+RUN mkdir -p /app/staticfiles /app/media /app/logs && \
+    chown -R trianxt:trianxt /app
+
+# Switch to non-root user
+USER trianxt
+
+# Expose port
 EXPOSE 8000
 
-CMD ["gunicorn", "tria_engine.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "60", "--access-logfile", "-", "--error-logfile", "-"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/')" || exit 1
+
+# Run with Gunicorn
+CMD ["gunicorn", "tria_engine.wsgi:application", \
+     "--config", "gunicorn_config.py"]

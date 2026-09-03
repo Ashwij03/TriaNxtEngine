@@ -1,24 +1,15 @@
-# settings.py
+# settings.py — Production-ready Django settings for TriaNXT CTMS
+# Updated for Task 3: UI ↔ Engine Integration (Prod Scale)
 
 import os
 from pathlib import Path
-
-import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
-from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# python-dotenv is declared in requirements/base.txt; load a project-root
-# .env file (if present) before any os.environ reads below so secrets live
-# in .env (git-ignored) rather than in this file. See .env.example.
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(BASE_DIR / ".env")
-except ImportError:
-    pass
-
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
 ENV = os.environ.get("DJANGO_ENV", "development")
 DEBUG = ENV == "development"
 
@@ -27,18 +18,20 @@ if not SECRET_KEY:
     if ENV == "development":
         SECRET_KEY = "dev-only-not-for-production-change-me-immediately"
     else:
-        raise ImproperlyConfigured("DJANGO_SECRET_KEY is required")
-
-
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY is required in production")
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 CTMS_ENCRYPTION_KEY = os.environ.get("CTMS_ENCRYPTION_KEY")
-if not CTMS_ENCRYPTION_KEY and ENV != "development":
-    raise ImproperlyConfigured("CTMS_ENCRYPTION_KEY is required")
+if not CTMS_ENCRYPTION_KEY:
+    if ENV != "development":
+        raise ImproperlyConfigured("CTMS_ENCRYPTION_KEY is required in production")
 
 AUTH_USER_MODEL = "accounts.User"
 
+# ---------------------------------------------------------------------------
+# Applications
+# ---------------------------------------------------------------------------
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -47,18 +40,18 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
-    'corsheaders',
+    "corsheaders",
     "drf_yasg",
     "tria_engine.apps.accounts.apps.AccountsConfig",
     "tria_engine.apps.organizations.apps.OrganizationsConfig",
-    "tria_engine.apps.licensing.apps.LicensingConfig",
-    "tria_engine.apps.monitoring.apps.MonitoringConfig",
-    "tria_engine.apps.subscriptions.apps.SubscriptionsConfig",
-    "tria_engine.apps.billing.apps.BillingConfig",
+    "tria_engine.apps.health.apps.HealthConfig",
 ]
 
+# ---------------------------------------------------------------------------
+# Middleware — CORS must be first
+# ---------------------------------------------------------------------------
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -68,16 +61,41 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
+# ---------------------------------------------------------------------------
+# CORS — environment-driven, NO wildcard in production
+# ---------------------------------------------------------------------------
+CORS_ALLOWED_ORIGINS = os.environ.get(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000"
+).split(",")
+
+CORS_ALLOW_CREDENTIALS = os.environ.get("CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
+
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
 ]
 
-# Needed so the browser will actually send/receive the Django session
-# cookie on cross-origin requests from the React dev server (different
-# port = different origin). Requires CORS_ALLOWED_ORIGINS to be an
-# explicit list (not "*"), which it already is above.
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "content-type",
+    "dnt",
+    "origin",
+    "user-agent",
+    "x-csrftoken",
+    "x-requested-with",
+    "x-api-key",
+]
 
+# ---------------------------------------------------------------------------
+# URL Configuration
+# ---------------------------------------------------------------------------
 ROOT_URLCONF = "tria_engine.urls"
 
 TEMPLATES = [
@@ -98,41 +116,76 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "tria_engine.wsgi.application"
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# ---------------------------------------------------------------------------
+# Database — configurable via environment
+# ---------------------------------------------------------------------------
+DB_ENGINE = os.environ.get("DB_ENGINE", "django.db.backends.sqlite3")
 
-if DATABASE_URL:
-    # Managed / cloud Postgres (deployments) — one URL covers engine,
-    # credentials, host and port via dj-database-url.
-    DATABASES = {
-        "default": dj_database_url.config(
-            default=DATABASE_URL,
-            conn_max_age=600,
-            ssl_require=False,
-        )
-    }
-elif os.environ.get("DJANGO_DB_ENGINE"):
-    # docker-compose / CI set DJANGO_DB_* explicitly (see docker-compose.yml).
+if DB_ENGINE == "django.db.backends.sqlite3":
     DATABASES = {
         "default": {
-            "ENGINE": os.environ["DJANGO_DB_ENGINE"],
-            "NAME": os.environ.get("DJANGO_DB_NAME", str(BASE_DIR / "db.sqlite3")),
-            "USER": os.environ.get("DJANGO_DB_USER", ""),
-            "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
-            "HOST": os.environ.get("DJANGO_DB_HOST", ""),
-            "PORT": os.environ.get("DJANGO_DB_PORT", ""),
-        }
-    }
-elif ENV == "development":
-    # No DATABASE_URL / DJANGO_DB_* set — fall back to the local sqlite
-    # file so the project runs out of the box for every teammate.
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
+            "ENGINE": DB_ENGINE,
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
 else:
-    raise ImproperlyConfigured("DATABASE_URL is required outside development")
+    DATABASES = {
+        "default": {
+            "ENGINE": DB_ENGINE,
+            "NAME": os.environ.get("DB_NAME", "trianxt_ctms"),
+            "USER": os.environ.get("DB_USER", "trianxt"),
+            "PASSWORD": os.environ.get("DB_PASSWORD", ""),
+            "HOST": os.environ.get("DB_HOST", "localhost"),
+            "PORT": os.environ.get("DB_PORT", "5432"),
+            "OPTIONS": {},
+        }
+    }
+
+# ---------------------------------------------------------------------------
+# Cache — Redis (optional for development, required for production)
+# ---------------------------------------------------------------------------
+REDIS_URL = os.environ.get("REDIS_URL", "")
+
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "KEY_PREFIX": "trianxt",
+            "TIMEOUT": int(os.environ.get("CACHE_DEFAULT_TIMEOUT", "300")),
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "trianxt-dev-cache",
+            "TIMEOUT": 300,
+        }
+    }
+
+# ---------------------------------------------------------------------------
+# REST Framework
+# ---------------------------------------------------------------------------
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+    ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.environ.get("DRF_ANON_THROTTLE", "100/hour"),
+        "user": os.environ.get("DRF_USER_THROTTLE", "1000/hour"),
+    },
+}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -144,38 +197,12 @@ AUTH_PASSWORD_VALIDATORS = [
 PASSWORD_HASHERS = [
     "django.contrib.auth.hashers.Argon2PasswordHasher",
     "django.contrib.auth.hashers.PBKDF2PasswordHasher",
-    # "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
-    # "django.contrib.auth.hashers.ScryptPasswordHasher",
 ]
 
 AUTHENTICATION_BACKENDS = [
     "tria_engine.apps.accounts.authentication.EmailBackend",
     "django.contrib.auth.backends.ModelBackend",
 ]
-
-# REST_FRAMEWORK = {
-#     "DEFAULT_AUTHENTICATION_CLASSES": [
-#         "rest_framework.authentication.SessionAuthentication",
-#     ],
-#     "DEFAULT_PERMISSION_CLASSES": [
-#         "rest_framework.permissions.IsAuthenticated",
-#     ],
-#     "DEFAULT_RENDERER_CLASSES": [
-#         "rest_framework.renderers.JSONRenderer",
-#     ],
-# }
-
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-    ],
-    "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
-    ],
-    "DEFAULT_RENDERER_CLASSES": [
-        "rest_framework.renderers.JSONRenderer",
-    ],
-}
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
@@ -189,8 +216,8 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 TRIA_SECURITY = {
-    "PASSWORD_MAX_AGE_DAYS": int(os.environ.get("TRIA_PASSWORD_MAX_AGE_DAYS", "90")),
-    "TOKEN_EXPIRY_MINUTES": int(os.environ.get("TRIA_TOKEN_EXPIRY_MINUTES", "10")),
+    "PASSWORD_MAX_AGE_DAYS": int(os.environ.get("TRIA_PASSWORD_MAX_AGE_DAYS", 90)),
+    "TOKEN_EXPIRY_MINUTES": int(os.environ.get("TRIA_TOKEN_EXPIRY_MINUTES", 10)),
     "EXPOSE_OTP_IN_RESPONSE": os.environ.get("TRIA_EXPOSE_OTP_IN_RESPONSE", "true").lower() == "true",
     
 }
@@ -198,59 +225,151 @@ TRIA_SECURITY = {
 
 
 TRIA_UPLOADS = {
-    "DOCUMENT_MAX_SIZE": int(os.environ.get("TRIA_DOCUMENT_MAX_SIZE", str(10 * 1024 * 1024))),
+    "DOCUMENT_MAX_SIZE": int(os.environ.get("TRIA_DOCUMENT_MAX_SIZE", 10 * 1024 * 1024)),
     "DOCUMENT_ALLOWED_EXTENSIONS": os.environ.get(
         "TRIA_DOCUMENT_ALLOWED_EXTENSIONS",
         "pdf,doc,docx,xls,xlsx,txt"
     ).split(","),
-    "PROFILE_PHOTO_MAX_SIZE": int(os.environ.get("TRIA_PROFILE_PHOTO_MAX_SIZE", str(5 * 1024 * 1024))),
+    "PROFILE_PHOTO_MAX_SIZE": int(os.environ.get("TRIA_PROFILE_PHOTO_MAX_SIZE", 5 * 1024 * 1024)),
     "PROFILE_PHOTO_ALLOWED_EXTENSIONS": os.environ.get(
         "TRIA_PROFILE_PHOTO_ALLOWED_EXTENSIONS",
         "jpg,jpeg,png"
     ).split(","),
 }
 
-FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE", "2621440"))
-DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", "10485760"))
-DATA_UPLOAD_MAX_NUMBER_FILES = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_NUMBER_FILES", "20"))
-
 # ---------------------------------------------------------------------------
-# Billing / payments (tria_engine.apps.billing)
+# Security Settings — environment-aware
 # ---------------------------------------------------------------------------
-# Razorpay credentials come from the environment (or .env). Only KEY_ID is
-# ever exposed to the frontend checkout widget; KEY_SECRET / WEBHOOK_SECRET
-# stay server-side (see billing/gateway.py and views.py). Dev-only
-# fallbacks mirror the DJANGO_SECRET_KEY pattern above — production must
-# export real values or Django refuses to boot.
-RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
-RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
-if not RAZORPAY_KEY_ID:
-    if ENV == "development":
-        RAZORPAY_KEY_ID = "rzp_test_dev_only_key_id"
-        RAZORPAY_KEY_SECRET = RAZORPAY_KEY_SECRET or "dev-only-key-secret-not-for-production"
-        RAZORPAY_WEBHOOK_SECRET = RAZORPAY_WEBHOOK_SECRET or "dev-only-webhook-secret"
-    else:
-        raise ImproperlyConfigured("RAZORPAY_KEY_ID is required")
-if not RAZORPAY_KEY_SECRET and ENV != "development":
-    raise ImproperlyConfigured("RAZORPAY_KEY_SECRET is required")
-if not RAZORPAY_WEBHOOK_SECRET and ENV != "development":
-    raise ImproperlyConfigured("RAZORPAY_WEBHOOK_SECRET is required")
+# SECURE_SSL_REDIRECT: overridable via env (set to 'false' in Docker since SSL is terminated at nginx)
+env_ssl_redirect = os.environ.get("SECURE_SSL_REDIRECT", "").lower()
+if env_ssl_redirect in ("true", "1", "yes"):
+    SECURE_SSL_REDIRECT = True
+elif env_ssl_redirect in ("false", "0", "no"):
+    SECURE_SSL_REDIRECT = False
+elif ENV == "production":
+    SECURE_SSL_REDIRECT = True
+else:
+    SECURE_SSL_REDIRECT = False
 
-# Length of a paid period when a payment clears (see billing/models.py
-# DEFAULT_PERIOD_DAYS). Product decision: monthly cycle.
-BILLING_DEFAULT_PERIOD_DAYS = int(os.environ.get("BILLING_DEFAULT_PERIOD_DAYS", "30"))
+if ENV == "production":
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    CSRF_COOKIE_HTTPONLY = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+else:
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
+    CSRF_COOKIE_HTTPONLY = False
+    SECURE_HSTS_SECONDS = 0
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+    SECURE_HSTS_PRELOAD = False
+    SECURE_PROXY_SSL_HEADER = None
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
-SECURE_SSL_REDIRECT = False
-SESSION_COOKIE_SECURE = False
-CSRF_COOKIE_SECURE = False
-CSRF_COOKIE_HTTPONLY = False
-CSRF_TRUSTED_ORIGINS = ["http://127.0.0.1:9000", "http://127.0.0.1:8000"]  
-SECURE_HSTS_SECONDS = 0
-SECURE_HSTS_INCLUDE_SUBDOMAINS = False
-SECURE_HSTS_PRELOAD = False
-SECURE_PROXY_SSL_HEADER = None
-# SESSION_INACTIVE_TIMEOUT = 5
+CSRF_TRUSTED_ORIGINS = os.environ.get(
+    "CSRF_TRUSTED_ORIGINS",
+    "http://127.0.0.1:9000,http://127.0.0.1:8000,http://localhost:3000"
+).split(",")
+
+# Session settings
+SESSION_COOKIE_AGE = int(os.environ.get("SESSION_COOKIE_AGE", 3600))
+SESSION_SAVE_EVERY_REQUEST = True
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ---------------------------------------------------------------------------
+# Logging — structured production-friendly logging
+# ---------------------------------------------------------------------------
+LOG_LEVEL = os.environ.get("DJANGO_LOG_LEVEL", "INFO" if ENV == "production" else "DEBUG")
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name} {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+    "filters": {
+        "require_debug_false": {
+            "()": "django.utils.log.RequireDebugFalse",
+        },
+    },
+    "handlers": {
+        "console": {
+            "level": LOG_LEVEL,
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+        "file": {
+            "level": LOG_LEVEL,
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": LOG_DIR / "trianxt.log",
+            "maxBytes": 10 * 1024 * 1024,
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
+        "error_file": {
+            "level": "ERROR",
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": LOG_DIR / "trianxt_errors.log",
+            "maxBytes": 10 * 1024 * 1024,
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
+        "security_file": {
+            "level": "WARNING",
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": LOG_DIR / "trianxt_security.log",
+            "maxBytes": 10 * 1024 * 1024,
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": LOG_LEVEL,
+            "propagate": True,
+        },
+        "django.request": {
+            "handlers": ["console", "error_file"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "django.security": {
+            "handlers": ["security_file"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "tria_engine": {
+            "handlers": ["console", "file", "error_file"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+    },
+    "root": {
+        "handlers": ["console", "file"],
+        "level": LOG_LEVEL,
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Gunicorn settings
+# ---------------------------------------------------------------------------
+GUNICORN_WORKERS = int(os.environ.get("GUNICORN_WORKERS", "3"))
+GUNICORN_TIMEOUT = int(os.environ.get("GUNICORN_TIMEOUT", "120"))
+GUNICORN_BIND = os.environ.get("GUNICORN_BIND", "0.0.0.0:8000")

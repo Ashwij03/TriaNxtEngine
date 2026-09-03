@@ -5,9 +5,9 @@ from django.conf import settings
 from django.conf.urls.static import static
 from .views import (
     UserListAPI,
-    UserProfileAPI,
     RegisterAPI,
     LoginAPI,
+    LogoutAPI,
     LoginMFAAPI,
     VerifyLoginOTPAPI,
     ForgotPasswordAPI,
@@ -37,12 +37,6 @@ urlpatterns = [
         name="user-list-api"
     ),
 
-    path(
-        "profile/",
-        UserProfileAPI.as_view(),
-        name="user-profile-api"
-    ),
-
 
     path(
         "register/",
@@ -54,6 +48,12 @@ urlpatterns = [
         "login/",
         LoginAPI.as_view(),
         name="login-api"
+    ),
+
+    path(
+        "logout/",
+        LogoutAPI.as_view(),
+        name="logout-api"
     ),
     
     path(

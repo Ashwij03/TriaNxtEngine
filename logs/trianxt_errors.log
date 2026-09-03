@@ -1,0 +1,2 @@
+[2026-09-02 14:00:00,604] ERROR django.request Internal Server Error: /api/accounts/register/
+[2026-09-02 14:42:27,821] ERROR django.request Internal Server Error: /api/accounts/register/
