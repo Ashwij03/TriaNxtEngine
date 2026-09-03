@@ -35,6 +35,7 @@ REJECTION_MESSAGES = {
     "self_referral": "You can't redeem your own referral code.",
     "already_redeemed": "You've already redeemed a referral code before.",
     "referral_limit_reached": "This referral code has reached its redemption limit (3/3 used).",
+    "same_organization_referral": "Referral codes can't be redeemed by another user from the same organization and location.",
 }
 
 
@@ -205,6 +206,41 @@ def redeem_referral_code(referee, raw_code):
             "ok": False,
             "reason": "self_referral",
             "message": get_redemption_error_message("self_referral"),
+        }
+
+    # Step 3b — same-organization + same-pincode guard. A referral is
+    # blocked when the organizations match AND we cannot prove the two
+    # users are at different locations. Different organization -> always
+    # allowed. Same organization with two known, differing pincodes ->
+    # allowed (a different site of the same org). Same organization with
+    # matching pincodes, OR either side's pincode missing/unknown ->
+    # blocked (fail-closed: pincode is mandatory going forward, so a blank
+    # value here should only happen for legacy accounts, and we must not
+    # give those the benefit of the doubt).
+    referrer_user = code_record.user
+    same_organization = (
+        referrer_user.organization_id is not None
+        and referrer_user.organization_id == referee.organization_id
+    )
+
+    referrer_pincode = (referrer_user.pincode or "").strip()
+    referee_pincode = (referee.pincode or "").strip()
+    pincode_known_on_both_sides = bool(referrer_pincode) and bool(referee_pincode)
+
+    if same_organization:
+        if not pincode_known_on_both_sides:
+            # Fail-closed: at least one side has no verifiable location.
+            blocked_by_pincode = True
+        else:
+            blocked_by_pincode = referrer_pincode == referee_pincode
+    else:
+        blocked_by_pincode = False  # different organization is always allowed
+
+    if same_organization and blocked_by_pincode:
+        return {
+            "ok": False,
+            "reason": "same_organization_referral",
+            "message": get_redemption_error_message("same_organization_referral"),
         }
 
     # Step 4 — duplicate-redemption guard: a referee may redeem any code

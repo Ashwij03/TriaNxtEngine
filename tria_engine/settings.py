@@ -6,6 +6,16 @@ from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# python-dotenv is declared in requirements/base.txt; load a project-root
+# .env file (if present) before any os.environ reads below so secrets live
+# in .env (git-ignored) rather than in this file. See .env.example.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / ".env")
+except ImportError:
+    pass
+
 ENV = os.environ.get("DJANGO_ENV", "development")
 DEBUG = ENV == "development"
 
@@ -40,6 +50,9 @@ INSTALLED_APPS = [
     "tria_engine.apps.accounts.apps.AccountsConfig",
     "tria_engine.apps.organizations.apps.OrganizationsConfig",
     "tria_engine.apps.licensing.apps.LicensingConfig",
+    "tria_engine.apps.monitoring.apps.MonitoringConfig",
+    "tria_engine.apps.subscriptions.apps.SubscriptionsConfig",
+    "tria_engine.apps.billing.apps.BillingConfig",
 ]
 
 MIDDLEWARE = [
@@ -56,6 +69,12 @@ MIDDLEWARE = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
 ]
+
+# Needed so the browser will actually send/receive the Django session
+# cookie on cross-origin requests from the React dev server (different
+# port = different origin). Requires CORS_ALLOWED_ORIGINS to be an
+# explicit list (not "*"), which it already is above.
+CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = "tria_engine.urls"
 
@@ -176,6 +195,33 @@ TRIA_UPLOADS = {
 FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE", 2621440))
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", 10485760))
 DATA_UPLOAD_MAX_NUMBER_FILES = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_NUMBER_FILES", 20))
+
+# ---------------------------------------------------------------------------
+# Billing / payments (tria_engine.apps.billing)
+# ---------------------------------------------------------------------------
+# Razorpay credentials come from the environment (or .env). Only KEY_ID is
+# ever exposed to the frontend checkout widget; KEY_SECRET / WEBHOOK_SECRET
+# stay server-side (see billing/gateway.py and views.py). Dev-only
+# fallbacks mirror the DJANGO_SECRET_KEY pattern above — production must
+# export real values or Django refuses to boot.
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
+if not RAZORPAY_KEY_ID:
+    if ENV == "development":
+        RAZORPAY_KEY_ID = "rzp_test_dev_only_key_id"
+        RAZORPAY_KEY_SECRET = RAZORPAY_KEY_SECRET or "dev-only-key-secret-not-for-production"
+        RAZORPAY_WEBHOOK_SECRET = RAZORPAY_WEBHOOK_SECRET or "dev-only-webhook-secret"
+    else:
+        raise ImproperlyConfigured("RAZORPAY_KEY_ID is required")
+if not RAZORPAY_KEY_SECRET and ENV != "development":
+    raise ImproperlyConfigured("RAZORPAY_KEY_SECRET is required")
+if not RAZORPAY_WEBHOOK_SECRET and ENV != "development":
+    raise ImproperlyConfigured("RAZORPAY_WEBHOOK_SECRET is required")
+
+# Length of a paid period when a payment clears (see billing/models.py
+# DEFAULT_PERIOD_DAYS). Product decision: monthly cycle.
+BILLING_DEFAULT_PERIOD_DAYS = int(os.environ.get("BILLING_DEFAULT_PERIOD_DAYS", 30))
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"

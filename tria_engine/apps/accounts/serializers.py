@@ -418,7 +418,7 @@ class ResponseSchemaValidationSerializer(serializers.Serializer):
 class UserListSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["username", "email", "first_name", "last_name", "organization", "role"]
+        fields = ["username", "email", "first_name", "last_name", "organization", "role", "pincode"]
 
 
 class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializer):
@@ -439,6 +439,7 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
             "last_name",
             "organization",
             "role",
+            "pincode",
         ]
         extra_kwargs = {
             "password": {"write_only": True}
@@ -480,6 +481,12 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
         queryset=Role.objects.all(),
         required=True
     )
+
+    pincode = serializers.CharField(
+        required=True,
+        min_length=4,
+        max_length=10,
+    )
     
 
     # API VALIDATION CHANGE:
@@ -495,6 +502,14 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
             raise serializers.ValidationError("This username is already taken.")
+        return value
+
+    def validate_pincode(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Pincode is required.")
+        if not value.isdigit():
+            raise serializers.ValidationError("Pincode must contain digits only.")
         return value
 
     def validate(self, data):
@@ -520,7 +535,29 @@ class RegisterSerializer(RequestSchemaValidationMixin, serializers.ModelSerializ
     
         validated_data.pop("confirm_password")
         return create_user(validated_data)
-    
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    organization_name = serializers.CharField(source="organization.name", read_only=True)
+    role_name = serializers.CharField(source="role.name", read_only=True)
+
+    class Meta:
+        model = User
+        fields = [
+            "id", "username", "email", "first_name", "last_name",
+            "organization", "organization_name", "role", "role_name",
+            "pincode",
+        ]
+        read_only_fields = ["id", "username", "email", "organization", "role"]
+
+    def validate_pincode(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Pincode is required.")
+        if not value.isdigit():
+            raise serializers.ValidationError("Pincode must contain digits only.")
+        return value
+
 
 class LoginSerializer(RequestSchemaValidationMixin, serializers.Serializer):
     email = serializers.EmailField(
