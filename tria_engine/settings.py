@@ -2,7 +2,10 @@
 
 import os
 from pathlib import Path
+
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -27,13 +30,11 @@ if not SECRET_KEY:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required")
 
 
-
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 CTMS_ENCRYPTION_KEY = os.environ.get("CTMS_ENCRYPTION_KEY")
-if not CTMS_ENCRYPTION_KEY:
-    if ENV != "development":
-        raise ImproperlyConfigured("CTMS_ENCRYPTION_KEY is required")
+if not CTMS_ENCRYPTION_KEY and ENV != "development":
+    raise ImproperlyConfigured("CTMS_ENCRYPTION_KEY is required")
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -96,24 +97,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "tria_engine.wsgi.application"
 
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.sqlite3",
-#         "NAME": BASE_DIR / "db.sqlite3",
-#     }
-# }
-
-# tria_engine/settings.py — replace lines 79-84
-
 DATABASES = {
-    "default": {
-        "ENGINE": os.environ.get("DJANGO_DB_ENGINE", "django.db.backends.sqlite3"),
-        "NAME": os.environ.get("DJANGO_DB_NAME", str(BASE_DIR / "db.sqlite3")),
-        "USER": os.environ.get("DJANGO_DB_USER", ""),
-        "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
-        "HOST": os.environ.get("DJANGO_DB_HOST", ""),
-        "PORT": os.environ.get("DJANGO_DB_PORT", ""),
-    }
+    "default": dj_database_url.config(
+        default=os.environ.get("DATABASE_URL"),
+        conn_max_age=600,
+        ssl_require=False,
+    )
 }
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -134,18 +123,6 @@ AUTHENTICATION_BACKENDS = [
     "tria_engine.apps.accounts.authentication.EmailBackend",
     "django.contrib.auth.backends.ModelBackend",
 ]
-
-# REST_FRAMEWORK = {
-#     "DEFAULT_AUTHENTICATION_CLASSES": [
-#         "rest_framework.authentication.SessionAuthentication",
-#     ],
-#     "DEFAULT_PERMISSION_CLASSES": [
-#         "rest_framework.permissions.IsAuthenticated",
-#     ],
-#     "DEFAULT_RENDERER_CLASSES": [
-#         "rest_framework.renderers.JSONRenderer",
-#     ],
-# }
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -171,30 +148,29 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 TRIA_SECURITY = {
-    "PASSWORD_MAX_AGE_DAYS": int(os.environ.get("TRIA_PASSWORD_MAX_AGE_DAYS", 90)),
-    "TOKEN_EXPIRY_MINUTES": int(os.environ.get("TRIA_TOKEN_EXPIRY_MINUTES", 10)),
+    "PASSWORD_MAX_AGE_DAYS": int(os.environ.get("TRIA_PASSWORD_MAX_AGE_DAYS", "90")),
+    "TOKEN_EXPIRY_MINUTES": int(os.environ.get("TRIA_TOKEN_EXPIRY_MINUTES", "10")),
     "EXPOSE_OTP_IN_RESPONSE": os.environ.get("TRIA_EXPOSE_OTP_IN_RESPONSE", "true").lower() == "true",
-    
+
 }
 
 
-
 TRIA_UPLOADS = {
-    "DOCUMENT_MAX_SIZE": int(os.environ.get("TRIA_DOCUMENT_MAX_SIZE", 10 * 1024 * 1024)),
+    "DOCUMENT_MAX_SIZE": int(os.environ.get("TRIA_DOCUMENT_MAX_SIZE", str(10 * 1024 * 1024))),
     "DOCUMENT_ALLOWED_EXTENSIONS": os.environ.get(
         "TRIA_DOCUMENT_ALLOWED_EXTENSIONS",
         "pdf,doc,docx,xls,xlsx,txt"
     ).split(","),
-    "PROFILE_PHOTO_MAX_SIZE": int(os.environ.get("TRIA_PROFILE_PHOTO_MAX_SIZE", 5 * 1024 * 1024)),
+    "PROFILE_PHOTO_MAX_SIZE": int(os.environ.get("TRIA_PROFILE_PHOTO_MAX_SIZE", str(5 * 1024 * 1024))),
     "PROFILE_PHOTO_ALLOWED_EXTENSIONS": os.environ.get(
         "TRIA_PROFILE_PHOTO_ALLOWED_EXTENSIONS",
         "jpg,jpeg,png"
     ).split(","),
 }
 
-FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE", 2621440))
-DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", 10485760))
-DATA_UPLOAD_MAX_NUMBER_FILES = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_NUMBER_FILES", 20))
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE", "2621440"))
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", "10485760"))
+DATA_UPLOAD_MAX_NUMBER_FILES = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_NUMBER_FILES", "20"))
 
 # ---------------------------------------------------------------------------
 # Billing / payments (tria_engine.apps.billing)
@@ -221,7 +197,7 @@ if not RAZORPAY_WEBHOOK_SECRET and ENV != "development":
 
 # Length of a paid period when a payment clears (see billing/models.py
 # DEFAULT_PERIOD_DAYS). Product decision: monthly cycle.
-BILLING_DEFAULT_PERIOD_DAYS = int(os.environ.get("BILLING_DEFAULT_PERIOD_DAYS", 30))
+BILLING_DEFAULT_PERIOD_DAYS = int(os.environ.get("BILLING_DEFAULT_PERIOD_DAYS", "30"))
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
@@ -230,7 +206,7 @@ SECURE_SSL_REDIRECT = False
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 CSRF_COOKIE_HTTPONLY = False
-CSRF_TRUSTED_ORIGINS = ["http://127.0.0.1:9000", "http://127.0.0.1:8000"]  
+CSRF_TRUSTED_ORIGINS = ["http://127.0.0.1:9000", "http://127.0.0.1:8000"]
 SECURE_HSTS_SECONDS = 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = False
 SECURE_HSTS_PRELOAD = False
