@@ -20,11 +20,7 @@ django-filter>=23.5
 # Swagger
 drf_yasg
 
-# Password hashing (argon2) — was previously a shell command
-# ("python -m pip install ...") embedded in this file, which is not a
-# valid requirement line and made `pip install -r base.txt` fail outright.
-# Converted to normal requirement specifiers; no dependency was added or
-# removed, this only makes the file installable.
+# Password hashing (argon2)
 argon2-cffi>=21.2
 
 # Image handling
