@@ -2,9 +2,22 @@
 
 import os
 from pathlib import Path
+
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# python-dotenv is declared in requirements/base.txt; load a project-root
+# .env file (if present) before any os.environ reads below so secrets live
+# in .env (git-ignored) rather than in this file. See .env.example.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / ".env")
+except ImportError:
+    pass
 
 ENV = os.environ.get("DJANGO_ENV", "development")
 DEBUG = ENV == "development"
@@ -21,9 +34,8 @@ if not SECRET_KEY:
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 CTMS_ENCRYPTION_KEY = os.environ.get("CTMS_ENCRYPTION_KEY")
-if not CTMS_ENCRYPTION_KEY:
-    if ENV != "development":
-        raise ImproperlyConfigured("CTMS_ENCRYPTION_KEY is required")
+if not CTMS_ENCRYPTION_KEY and ENV != "development":
+    raise ImproperlyConfigured("CTMS_ENCRYPTION_KEY is required")
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -39,6 +51,10 @@ INSTALLED_APPS = [
     "drf_yasg",
     "tria_engine.apps.accounts.apps.AccountsConfig",
     "tria_engine.apps.organizations.apps.OrganizationsConfig",
+    "tria_engine.apps.licensing.apps.LicensingConfig",
+    "tria_engine.apps.monitoring.apps.MonitoringConfig",
+    "tria_engine.apps.subscriptions.apps.SubscriptionsConfig",
+    "tria_engine.apps.billing.apps.BillingConfig",
 ]
 
 MIDDLEWARE = [
@@ -55,6 +71,12 @@ MIDDLEWARE = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
 ]
+
+# Needed so the browser will actually send/receive the Django session
+# cookie on cross-origin requests from the React dev server (different
+# port = different origin). Requires CORS_ALLOWED_ORIGINS to be an
+# explicit list (not "*"), which it already is above.
+CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = "tria_engine.urls"
 
@@ -76,25 +98,41 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "tria_engine.wsgi.application"
 
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.sqlite3",
-#         "NAME": BASE_DIR / "db.sqlite3",
-#     }
-# }
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# tria_engine/settings.py — replace lines 79-84
-
-DATABASES = {
-    "default": {
-        "ENGINE": os.environ.get("DJANGO_DB_ENGINE", "django.db.backends.sqlite3"),
-        "NAME": os.environ.get("DJANGO_DB_NAME", str(BASE_DIR / "db.sqlite3")),
-        "USER": os.environ.get("DJANGO_DB_USER", ""),
-        "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
-        "HOST": os.environ.get("DJANGO_DB_HOST", ""),
-        "PORT": os.environ.get("DJANGO_DB_PORT", ""),
+if DATABASE_URL:
+    # Managed / cloud Postgres (deployments) — one URL covers engine,
+    # credentials, host and port via dj-database-url.
+    DATABASES = {
+        "default": dj_database_url.config(
+            default=DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=False,
+        )
     }
-}
+elif os.environ.get("DJANGO_DB_ENGINE"):
+    # docker-compose / CI set DJANGO_DB_* explicitly (see docker-compose.yml).
+    DATABASES = {
+        "default": {
+            "ENGINE": os.environ["DJANGO_DB_ENGINE"],
+            "NAME": os.environ.get("DJANGO_DB_NAME", str(BASE_DIR / "db.sqlite3")),
+            "USER": os.environ.get("DJANGO_DB_USER", ""),
+            "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
+            "HOST": os.environ.get("DJANGO_DB_HOST", ""),
+            "PORT": os.environ.get("DJANGO_DB_PORT", ""),
+        }
+    }
+elif ENV == "development":
+    # No DATABASE_URL / DJANGO_DB_* set — fall back to the local sqlite
+    # file so the project runs out of the box for every teammate.
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+else:
+    raise ImproperlyConfigured("DATABASE_URL is required outside development")
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -151,8 +189,8 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 TRIA_SECURITY = {
-    "PASSWORD_MAX_AGE_DAYS": int(os.environ.get("TRIA_PASSWORD_MAX_AGE_DAYS", 90)),
-    "TOKEN_EXPIRY_MINUTES": int(os.environ.get("TRIA_TOKEN_EXPIRY_MINUTES", 10)),
+    "PASSWORD_MAX_AGE_DAYS": int(os.environ.get("TRIA_PASSWORD_MAX_AGE_DAYS", "90")),
+    "TOKEN_EXPIRY_MINUTES": int(os.environ.get("TRIA_TOKEN_EXPIRY_MINUTES", "10")),
     "EXPOSE_OTP_IN_RESPONSE": os.environ.get("TRIA_EXPOSE_OTP_IN_RESPONSE", "true").lower() == "true",
     
 }
@@ -160,21 +198,48 @@ TRIA_SECURITY = {
 
 
 TRIA_UPLOADS = {
-    "DOCUMENT_MAX_SIZE": int(os.environ.get("TRIA_DOCUMENT_MAX_SIZE", 10 * 1024 * 1024)),
+    "DOCUMENT_MAX_SIZE": int(os.environ.get("TRIA_DOCUMENT_MAX_SIZE", str(10 * 1024 * 1024))),
     "DOCUMENT_ALLOWED_EXTENSIONS": os.environ.get(
         "TRIA_DOCUMENT_ALLOWED_EXTENSIONS",
         "pdf,doc,docx,xls,xlsx,txt"
     ).split(","),
-    "PROFILE_PHOTO_MAX_SIZE": int(os.environ.get("TRIA_PROFILE_PHOTO_MAX_SIZE", 5 * 1024 * 1024)),
+    "PROFILE_PHOTO_MAX_SIZE": int(os.environ.get("TRIA_PROFILE_PHOTO_MAX_SIZE", str(5 * 1024 * 1024))),
     "PROFILE_PHOTO_ALLOWED_EXTENSIONS": os.environ.get(
         "TRIA_PROFILE_PHOTO_ALLOWED_EXTENSIONS",
         "jpg,jpeg,png"
     ).split(","),
 }
 
-FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE", 2621440))
-DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", 10485760))
-DATA_UPLOAD_MAX_NUMBER_FILES = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_NUMBER_FILES", 20))
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE", "2621440"))
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", "10485760"))
+DATA_UPLOAD_MAX_NUMBER_FILES = int(os.environ.get("DJANGO_DATA_UPLOAD_MAX_NUMBER_FILES", "20"))
+
+# ---------------------------------------------------------------------------
+# Billing / payments (tria_engine.apps.billing)
+# ---------------------------------------------------------------------------
+# Razorpay credentials come from the environment (or .env). Only KEY_ID is
+# ever exposed to the frontend checkout widget; KEY_SECRET / WEBHOOK_SECRET
+# stay server-side (see billing/gateway.py and views.py). Dev-only
+# fallbacks mirror the DJANGO_SECRET_KEY pattern above — production must
+# export real values or Django refuses to boot.
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
+if not RAZORPAY_KEY_ID:
+    if ENV == "development":
+        RAZORPAY_KEY_ID = "rzp_test_dev_only_key_id"
+        RAZORPAY_KEY_SECRET = RAZORPAY_KEY_SECRET or "dev-only-key-secret-not-for-production"
+        RAZORPAY_WEBHOOK_SECRET = RAZORPAY_WEBHOOK_SECRET or "dev-only-webhook-secret"
+    else:
+        raise ImproperlyConfigured("RAZORPAY_KEY_ID is required")
+if not RAZORPAY_KEY_SECRET and ENV != "development":
+    raise ImproperlyConfigured("RAZORPAY_KEY_SECRET is required")
+if not RAZORPAY_WEBHOOK_SECRET and ENV != "development":
+    raise ImproperlyConfigured("RAZORPAY_WEBHOOK_SECRET is required")
+
+# Length of a paid period when a payment clears (see billing/models.py
+# DEFAULT_PERIOD_DAYS). Product decision: monthly cycle.
+BILLING_DEFAULT_PERIOD_DAYS = int(os.environ.get("BILLING_DEFAULT_PERIOD_DAYS", "30"))
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
