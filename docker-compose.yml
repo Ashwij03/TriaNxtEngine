@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DJANGO_DB_NAME:-tria_engine}
+      POSTGRES_USER: ${DJANGO_DB_USER:-tria_user}
+      POSTGRES_PASSWORD: ${DJANGO_DB_PASSWORD:-changeme_local_only}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DJANGO_DB_USER:-tria_user} -d ${DJANGO_DB_NAME:-tria_engine}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DJANGO_ENV: development
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-not-for-production-change-me-immediately}
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,engine
+      CTMS_ENCRYPTION_KEY: ${CTMS_ENCRYPTION_KEY:-dev-only-local-key-change-me}
+      DJANGO_DB_ENGINE: django.db.backends.postgresql
+      DJANGO_DB_NAME: ${DJANGO_DB_NAME:-tria_engine}
+      DJANGO_DB_USER: ${DJANGO_DB_USER:-tria_user}
+      DJANGO_DB_PASSWORD: ${DJANGO_DB_PASSWORD:-changeme_local_only}
+      DJANGO_DB_HOST: db
+      DJANGO_DB_PORT: "5432"
+    ports:
+      - "8000:8000"
+    # Run migrations before gunicorn starts. Overrides the Dockerfile's
+    # CMD for local smoke-testing only — remove this for the real ECS
+    # task def in later steps, where migrations should run as a separate
+    # one-off task, not on every container start.
+    command: ["sh", "-c", "python manage.py migrate --noinput && gunicorn tria_engine.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 60 --access-logfile - --error-logfile -"]
+
+volumes:
+  db_data:
