@@ -1,10 +1,8 @@
 # settings.py — Production-ready Django settings for TriaNXT CTMS
-# Updated for Task 3: UI ↔ Engine Integration (Prod Scale)
 
 import os
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
-
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -15,6 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # .env file (if present) before any os.environ reads below so secrets live
 # in .env (git-ignored) rather than in this file. See .env.example.
 try:
+    from dotenv import load_dotenv
     load_dotenv(BASE_DIR / ".env")
 except ImportError:
     pass
@@ -64,7 +63,6 @@ INSTALLED_APPS = [
     "drf_yasg",
     "tria_engine.apps.accounts.apps.AccountsConfig",
     "tria_engine.apps.organizations.apps.OrganizationsConfig",
-    "tria_engine.apps.health.apps.HealthConfig",
 ]
 
 # ---------------------------------------------------------------------------
@@ -74,7 +72,6 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
-    "tria_engine.middleware.DatabaseRetryMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -153,14 +150,8 @@ WSGI_APPLICATION = "tria_engine.wsgi.application"
 #   - DATABASE_URL is mandatory.
 #   - PostgreSQL connections require SSL/TLS.
 #
-# Security:
-#   - DATABASE_URL must be supplied through the deployment environment or
-#     secret manager and must never be committed to source control.
-#   - conn_max_age=600 enables persistent connections for 10 minutes.
-#   - connect_timeout limits the time spent attempting a DB connection.
-#   - statement_timeout limits the execution time of individual PostgreSQL
-#     queries.
-#
+
+import dj_database_url
 
 DB_CONNECT_TIMEOUT = int(
     os.environ.get("DB_CONNECT_TIMEOUT_SECONDS", "5")
@@ -175,7 +166,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 if ENV == "development" and not DATABASE_URL:
-    # Local development fallback.
+    # Local development fallback to SQLite.
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
@@ -190,57 +181,12 @@ else:
         )
 
     DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.environ.get("DB_NAME", "trianxt_ctms"),
-            "USER": os.environ.get("DB_USER", "trianxt"),
-            "PASSWORD": os.environ.get("DB_PASSWORD", ""),
-            "HOST": os.environ.get("DB_HOST", "localhost"),
-            "PORT": os.environ.get("DB_PORT", "5432"),
-            "OPTIONS": {
-                "connect_timeout": DB_CONNECT_TIMEOUT,
-                "options": f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
-            },
-        }
-    }
-
-    # -----------------------------------------------------------------------
-    # Transaction isolation
-    # -----------------------------------------------------------------------
-    try:
-        import psycopg2.extensions
-
-        _ISOLATION_LEVELS = {
-            "READ_COMMITTED": psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED,
-            "REPEATABLE_READ": psycopg2.extensions.ISOLATION_LEVEL_REPEATABLE_READ,
-            "SERIALIZABLE": psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE,
-        }
-
-        _isolation_choice = os.environ.get(
-            "DB_TRANSACTION_ISOLATION_LEVEL",
-            "READ_COMMITTED",
-        ).upper()
-
-        if _isolation_choice not in _ISOLATION_LEVELS:
-            raise ImproperlyConfigured(
-                "Invalid DB_TRANSACTION_ISOLATION_LEVEL. "
-                "Use READ_COMMITTED, REPEATABLE_READ, or SERIALIZABLE."
-            )
-
-        DATABASES["default"]["OPTIONS"]["isolation_level"] = (
-            _ISOLATION_LEVELS[_isolation_choice]
+        "default": dj_database_url.config(
+            default=DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=False,
         )
-
-    except ImportError:
-        pass
-
-    # -----------------------------------------------------------------------
-    # Optional AWS RDS IAM database authentication
-    # -----------------------------------------------------------------------
-    if os.environ.get("IAM_DB_AUTH_ENABLED", "false").lower() == "true":
-        DATABASES["default"]["ENGINE"] = "tria_engine.db_backends.iam_postgres"
-        DATABASES["default"]["IAM_AUTH_REGION"] = os.environ.get("AWS_REGION", "us-east-1")
-        DATABASES["default"].pop("PASSWORD", None)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -429,33 +375,6 @@ DATA_UPLOAD_MAX_NUMBER_FILES = int(
 
 
 # ---------------------------------------------------------------------------
-# Billing / payments
-# ---------------------------------------------------------------------------
-
-RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
-RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET")
-
-if not RAZORPAY_KEY_ID:
-    if ENV == "development":
-        RAZORPAY_KEY_ID = "rzp_test_dev_only_key_id"
-        RAZORPAY_KEY_SECRET = RAZORPAY_KEY_SECRET or "dev-only-key-secret-not-for-production"
-        RAZORPAY_WEBHOOK_SECRET = RAZORPAY_WEBHOOK_SECRET or "dev-only-webhook-secret"
-    else:
-        raise ImproperlyConfigured("RAZORPAY_KEY_ID is required")
-
-if not RAZORPAY_KEY_SECRET and ENV != "development":
-    raise ImproperlyConfigured("RAZORPAY_KEY_SECRET is required")
-
-if not RAZORPAY_WEBHOOK_SECRET and ENV != "development":
-    raise ImproperlyConfigured("RAZORPAY_WEBHOOK_SECRET is required")
-
-BILLING_DEFAULT_PERIOD_DAYS = int(
-    os.environ.get("BILLING_DEFAULT_PERIOD_DAYS", "30")
-)
-
-
-# ---------------------------------------------------------------------------
 # Security Settings — environment-aware
 # ---------------------------------------------------------------------------
 SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -503,102 +422,3 @@ SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-
-
-# ---------------------------------------------------------------------------
-# Logging — structured production-friendly logging with PII redaction
-# ---------------------------------------------------------------------------
-LOG_LEVEL = os.environ.get("DJANGO_LOG_LEVEL", "INFO" if ENV == "production" else "DEBUG")
-LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
-
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "filters": {
-        "require_debug_false": {
-            "()": "django.utils.log.RequireDebugFalse",
-        },
-        "pii_redaction": {
-            "()": "tria_engine.logging_filters.PIIRedactionFilter",
-        },
-    },
-    "formatters": {
-        "verbose": {
-            "format": "[{asctime}] {levelname} {name} {message}",
-            "style": "{",
-        },
-        "simple": {
-            "format": "{levelname} {message}",
-            "style": "{",
-        },
-    },
-    "handlers": {
-        "console": {
-            "level": LOG_LEVEL,
-            "class": "logging.StreamHandler",
-            "formatter": "simple",
-            "filters": ["pii_redaction"],
-        },
-        "file": {
-            "level": LOG_LEVEL,
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": LOG_DIR / "trianxt.log",
-            "maxBytes": 10 * 1024 * 1024,
-            "backupCount": 5,
-            "formatter": "verbose",
-            "filters": ["pii_redaction"],
-        },
-        "error_file": {
-            "level": "ERROR",
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": LOG_DIR / "trianxt_errors.log",
-            "maxBytes": 10 * 1024 * 1024,
-            "backupCount": 5,
-            "formatter": "verbose",
-            "filters": ["pii_redaction"],
-        },
-        "security_file": {
-            "level": "WARNING",
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": LOG_DIR / "trianxt_security.log",
-            "maxBytes": 10 * 1024 * 1024,
-            "backupCount": 5,
-            "formatter": "verbose",
-            "filters": ["pii_redaction"],
-        },
-    },
-    "loggers": {
-        "django": {
-            "handlers": ["console", "file"],
-            "level": LOG_LEVEL,
-            "propagate": True,
-        },
-        "django.request": {
-            "handlers": ["console", "error_file"],
-            "level": "WARNING",
-            "propagate": False,
-        },
-        "django.security": {
-            "handlers": ["security_file"],
-            "level": "WARNING",
-            "propagate": False,
-        },
-        "tria_engine": {
-            "handlers": ["console", "file", "error_file"],
-            "level": LOG_LEVEL,
-            "propagate": False,
-        },
-    },
-    "root": {
-        "handlers": ["console", "file"],
-        "level": LOG_LEVEL,
-    },
-}
-
-# ---------------------------------------------------------------------------
-# Gunicorn settings
-# ---------------------------------------------------------------------------
-GUNICORN_WORKERS = int(os.environ.get("GUNICORN_WORKERS", "3"))
-GUNICORN_TIMEOUT = int(os.environ.get("GUNICORN_TIMEOUT", "120"))
-GUNICORN_BIND = os.environ.get("GUNICORN_BIND", "0.0.0.0:8000")
