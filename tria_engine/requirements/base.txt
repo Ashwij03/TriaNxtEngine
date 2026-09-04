@@ -26,7 +26,3 @@ drf_yasg
 django[argon2]
 pillow
 cryptography
-
-# Payments (billing app) — official Razorpay SDK. Never hand-roll HMAC or
-# order/payment calls against an undocumented API surface.
-razorpay>=1.4

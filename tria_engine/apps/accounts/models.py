@@ -29,13 +29,6 @@ class User(AbstractUser):
         blank=True,
         related_name="users",
     )
-    pincode = models.CharField(
-        max_length=10,
-        blank=False,
-        null=False,
-        default="",
-        help_text="Postal/PIN code of the user's organization location, captured at registration. Mandatory for every user created from this point forward — the same-organization referral guard in the licensing app depends on this always being populated.",
-    )
     role = models.ForeignKey(
         Role,
         on_delete=models.SET_NULL,
