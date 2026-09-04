@@ -277,6 +277,7 @@ class LoginOTP(models.Model):
 class AuditLog(models.Model):
     ACTION_CHOICES = [
         ("LOGIN", "LOGIN"),
+        ("LOGOUT", "LOGOUT"),
         ("FAILED_LOGIN", "FAILED_LOGIN"),
         ("PASSWORD_CHANGE", "PASSWORD_CHANGE"),
         ("RESET_PASSWORD", "RESET_PASSWORD"),

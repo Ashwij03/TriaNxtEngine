@@ -172,8 +172,76 @@ class RegisterAPI(APIView):
 
     def post(self, request):
         try:
+            from tria_engine.apps.organizations.models import Organization, Role
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
 
-            serializer = RegisterSerializer(data=request.data)
+            # Use .dict() to get a flat dict from QueryDict (DRF)
+            data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
+
+            # ── Resolve organization ───────────────────────────────────────
+            # Accept either an integer PK or a string organization name.
+            org_value = data.get("organization")
+            org_name = data.get("organization_name")
+
+            if isinstance(org_value, int) and Organization.objects.filter(pk=org_value).exists():
+                pass  # valid PK, keep it
+            elif org_name and isinstance(org_name, str) and org_name.strip():
+                org, _ = Organization.objects.get_or_create(name=org_name.strip())
+                data["organization"] = org.id
+            elif not Organization.objects.exists():
+                org, _ = Organization.objects.get_or_create(name="Default Organization")
+                data["organization"] = org.id
+            else:
+                # Pick the first available organization as fallback
+                org = Organization.objects.first()
+                if org:
+                    data["organization"] = org.id
+
+            # ── Resolve role ───────────────────────────────────────────────
+            # Accept either an integer PK or a string role name.
+            role_value = data.get("role")
+            org_id = data.get("organization")
+
+            # Frontend sends role as string like "SiteStaff", "PI", "CRO", "Sponsor"
+            ROLE_NAME_MAP = {
+                "SiteStaff": "SiteStaff",
+                "Site Staff": "SiteStaff",
+                "Site PI": "PI",
+                "PI": "PI",
+                "Principal Investigator": "PI",
+                "CRO": "CRO",
+                "Sponsor": "Sponsor",
+                "Admin": "Admin",
+            }
+
+            if isinstance(role_value, int) and Role.objects.filter(pk=role_value).exists():
+                pass  # valid PK, keep it
+            elif isinstance(role_value, str) and role_value.strip():
+                mapped_name = ROLE_NAME_MAP.get(role_value.strip(), role_value.strip())
+                org_obj = Organization.objects.filter(pk=org_id).first()
+                if org_obj:
+                    role_obj, _ = Role.objects.get_or_create(
+                        name=mapped_name, organization=org_obj
+                    )
+                    data["role"] = role_obj.id
+            elif not Role.objects.exists() and org_id:
+                org_obj = Organization.objects.filter(pk=org_id).first()
+                if org_obj:
+                    for rn in ["SiteStaff", "PI", "CRO", "Sponsor", "Admin"]:
+                        Role.objects.get_or_create(name=rn, organization=org_obj)
+                    default_role = Role.objects.filter(name="SiteStaff", organization=org_obj).first()
+                    if default_role:
+                        data["role"] = default_role.id
+
+            # ── Ensure admin is always Active ──────────────────────────────
+            if isinstance(data.get("role"), int):
+                role_obj = Role.objects.filter(pk=data["role"]).first()
+                if role_obj and role_obj.name == "Admin":
+                    data["approval_status"] = "Approved"
+                    data["account_status"] = "Active"
+
+            serializer = RegisterSerializer(data=data)
 
             # API VALIDATION CHANGE:
             # Return request-schema details on invalid input.
@@ -373,6 +441,8 @@ class LoginAPI(APIView):
         )
         
         if user is not None:
+            # Establish Django session for session-based authentication
+            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
 
             create_audit_log(
                     user=user,
@@ -404,6 +474,9 @@ class LoginAPI(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "is_active": user.is_active,
+                    "role": user.role.name if user.role else None,
+                    "organization_name": user.organization.name if user.organization else None,
+                    "organization": user.organization.id if user.organization else None,
                 }
             },
             status=200
@@ -2143,3 +2216,23 @@ class AuditLogsAPI(APIView):
         #     serializer.data,
         #     status=200
         # )
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class LogoutAPI(APIView):
+    """Logout endpoint — clears Django session."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.contrib.auth import logout as django_logout
+
+        create_audit_log(
+            user=request.user,
+            action="LOGOUT",
+            ip_address=request.META.get('REMOTE_ADDR'),
+            description=f"{request.user.username} logged out",
+            signature_meaning="User electronically signed logout"
+        )
+
+        django_logout(request)
+        return Response({"message": "Logged out successfully"}, status=200)

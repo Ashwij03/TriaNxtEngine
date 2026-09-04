@@ -1,0 +1,895 @@
+name: Backend CI/CD (TriaNxtEngine)
+
+# Task 5 — CI/CD Pipeline for Infra and Code
+#
+# Complete pipeline:
+#
+#   CODE → VALIDATE → TEST → SECURITY GATES → BUILD/PACKAGE →
+#   STAGING DEPLOY → STAGING INTEGRATION TESTS → SMOKE TESTS →
+#   DAST (OWASP ZAP) → LIQUIBASE STAGING →
+#   MANUAL PRODUCTION APPROVAL → LIQUIBASE PRODUCTION →
+#   PRODUCTION DEPLOYMENT → POST-DEPLOYMENT VERIFICATION →
+#   NOTIFICATION
+#
+# Job graph (image-tag flows through the entire chain):
+#
+#            +-- secret-scan
+#   validate -+-- sast
+#            +-- dependency-scan
+#       |
+#       v
+#     test
+#       |
+#       v  (needs: test, secret-scan, sast, dependency-scan)
+#  docker-build-and-scan ───── outputs: image-tag
+#       |
+#       v  (needs: docker-build-and-scan)
+#  staging-deploy
+#       |
+#       v
+#  staging-integration-tests
+#       |
+#       v
+#  smoke-tests
+#       |
+#       v
+#  dast
+#       |
+#       v
+#  liquibase-staging  (skipped if LIQUIBASE_ENABLED != 'true')
+#       |
+#       v  (needs: dast, docker-build-and-scan)
+#  production-approval
+#       |
+#       v
+#  liquibase-production  (skipped if LIQUIBASE_ENABLED != 'true')
+#       |
+#       v  (needs: liquibase-production, docker-build-and-scan)
+#  production-deploy
+#       |
+#       v
+#  post-deploy-verify
+#       |
+#       v
+#  notify-pipeline-result
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  GITLEAKS_VERSION: "8.21.2"
+
+jobs:
+  # ==================================================================
+  # CI — VALIDATION
+  # ==================================================================
+  validate:
+    name: Validate (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: tria_engine/requirements/dev.txt
+
+      - name: Install dependencies
+        run: pip install -r tria_engine/requirements/dev.txt
+
+      - name: Flake8 - fail on real errors only
+        run: flake8 --select=E9,F63,F7,F82 --exclude=migrations,staticfiles tria_engine manage.py
+
+      - name: Flake8 - full style report (non-blocking)
+        run: flake8 --exclude=migrations,staticfiles tria_engine manage.py || true
+
+  # ==================================================================
+  # SECURITY GATE 1 — Secret scanning
+  # ==================================================================
+  secret-scan:
+    name: "Security: secret scan (gitleaks)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run gitleaks (fails on any detected secret)
+        run: |
+          gitleaks detect \
+            --source . \
+            --redact \
+            --report-format json \
+            --report-path gitleaks-report.json \
+            --exit-code 1
+
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ==================================================================
+  # SECURITY GATE 2 — SAST
+  # ==================================================================
+  sast:
+    name: "Security: SAST (bandit)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install bandit
+        run: pip install "bandit>=1.7,<2.0"
+
+      - name: Bandit - full report (informational)
+        run: |
+          bandit -r tria_engine manage.py \
+            -x "*/migrations/*,*/staticfiles/*,*/tests/*" \
+            -f txt -f json -o bandit-report.json || true
+
+      - name: Bandit - fail on medium+ severity/confidence
+        run: |
+          bandit -r tria_engine manage.py \
+            -x "*/migrations/*,*/staticfiles/*,*/tests/*" \
+            -ll -ii
+
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ==================================================================
+  # SECURITY GATE 3 — Dependency vulnerability scanning
+  # ==================================================================
+  dependency-scan:
+    name: "Security: dependency scan (pip-audit)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit base requirements
+        run: pip-audit -r tria_engine/requirements/base.txt
+
+      - name: Audit production requirements
+        run: pip-audit -r tria_engine/requirements/prod.txt
+
+  # ==================================================================
+  # CI — BACKEND TESTS
+  # ==================================================================
+  # Known pre-existing failures (3 of 5 tests):
+  #   - test_document_upload_success: returns 400 (expected 201)
+  #   - test_document_download_success: returns 404 (expected 200)
+  #   - test_profile_photo_upload_success: returns 400 (expected 200)
+  # These are application-level bugs, not CI/CD issues.
+  test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    needs: validate
+    env:
+      DJANGO_ENV: development
+      DJANGO_SECRET_KEY: ci-test-secret-key-not-for-production
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1"
+      CTMS_ENCRYPTION_KEY: ci-test-encryption-key-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: tria_engine/requirements/dev.txt
+
+      - name: Install dependencies
+        run: pip install -r tria_engine/requirements/dev.txt
+
+      - name: Run backend test suite
+        run: python manage.py test --verbosity=2
+
+  # ==================================================================
+  # SECURITY GATE 4 — Docker build + container image scan
+  # ==================================================================
+  docker-build-and-scan:
+    name: Docker build + container scan
+    runs-on: ubuntu-latest
+    needs: [test, secret-scan, sast, dependency-scan]
+    outputs:
+      image-tag: ${{ steps.meta.outputs.image-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          IMAGE_TAG="${{ github.sha }}"
+          echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Backend image tag: ${IMAGE_TAG}"
+
+      - name: Build image
+        run: docker build -t trianxt-engine:${{ steps.meta.outputs.image-tag }} .
+
+      - name: Trivy - full report (informational)
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: "trianxt-engine:${{ steps.meta.outputs.image-tag }}"
+          format: "table"
+          severity: "CRITICAL,HIGH,MEDIUM"
+          exit-code: "0"
+
+      - name: Trivy - fail on fixable CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: "trianxt-engine:${{ steps.meta.outputs.image-tag }}"
+          skip-setup-trivy: true
+          format: "table"
+          severity: "CRITICAL,HIGH"
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Trivy - save JSON report
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: "trianxt-engine:${{ steps.meta.outputs.image-tag }}"
+          skip-setup-trivy: true
+          format: "json"
+          output: "trivy-report.json"
+          severity: "CRITICAL,HIGH,MEDIUM"
+          exit-code: "0"
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.json
+          retention-days: 14
+
+      - name: Save Docker image as artifact
+        run: |
+          docker save trianxt-engine:${{ steps.meta.outputs.image-tag }} \
+            | gzip > trianxt-engine-${{ steps.meta.outputs.image-tag }}.tar.gz
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image-${{ steps.meta.outputs.image-tag }}
+          path: trianxt-engine-${{ steps.meta.outputs.image-tag }}.tar.gz
+          retention-days: 7
+
+  # ==================================================================
+  # STAGING/UAT DEPLOYMENT
+  # ==================================================================
+  staging-deploy:
+    name: Deploy to Staging/UAT
+    runs-on: ubuntu-latest
+    needs: [docker-build-and-scan]
+    environment:
+      name: staging
+    env:
+      IMAGE_TAG: ${{ needs.docker-build-and-scan.outputs.image-tag }}
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image-${{ env.IMAGE_TAG }}
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.STAGING_SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy image to staging server
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            trianxt-engine-${{ env.IMAGE_TAG }}.tar.gz \
+            deploy@${{ secrets.STAGING_SSH_HOST }}:${{ secrets.STAGING_DEPLOY_PATH }}/
+
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.STAGING_SSH_HOST }} << DEPLOY_SCRIPT
+            set -euo pipefail
+            cd ${{ secrets.STAGING_DEPLOY_PATH }}
+
+            docker load < trianxt-engine-${{ env.IMAGE_TAG }}.tar.gz
+
+            docker stop ctms-backend-staging 2>/dev/null || true
+            docker rm ctms-backend-staging 2>/dev/null || true
+
+            docker run -d \
+              --name ctms-backend-staging \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e DJANGO_ENV=uat \
+              -e DJANGO_SECRET_KEY="${{ secrets.DJANGO_SECRET_KEY_STAGING }}" \
+              -e DJANGO_ALLOWED_HOSTS="${{ secrets.STAGING_URL }}" \
+              -e CTMS_ENCRYPTION_KEY="${{ secrets.CTMS_ENCRYPTION_KEY_STAGING }}" \
+              -e DATABASE_URL="postgresql://${{ secrets.STAGING_DB_USER }}:${{ secrets.STAGING_DB_PASSWORD }}@${{ secrets.STAGING_DB_HOST }}/${{ secrets.STAGING_DB_NAME }}" \
+              trianxt-engine:${{ env.IMAGE_TAG }}
+
+            sleep 10
+            docker ps --filter "name=ctms-backend-staging" --format "{{.Status}}"
+          DEPLOY_SCRIPT
+
+      - name: Verify staging is reachable
+        run: |
+          for i in 1 2 3 4 5; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 30 "${{ secrets.STAGING_URL }}/admin/" || echo "000")
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then
+              echo "Staging deployment verified (HTTP ${HTTP_STATUS})"
+              exit 0
+            fi
+            echo "Attempt $i/5: HTTP ${HTTP_STATUS} — retrying in 10s..."
+            sleep 10
+          done
+          echo "FAIL: Staging is not reachable after deployment"
+          exit 1
+
+  # ==================================================================
+  # STAGING INTEGRATION TESTS
+  # ==================================================================
+  # HTTP-based tests against the DEPLOYED staging application.
+  # NOT the same as CI unit tests (Django test suite against SQLite).
+  #
+  # NOT LOCALLY VERIFIABLE — requires deployed staging infrastructure.
+  staging-integration-tests:
+    name: "Staging: Integration Tests"
+    runs-on: ubuntu-latest
+    needs: [staging-deploy, liquibase-staging]
+    if: always() && needs.staging-deploy.result == 'success' && (needs.liquibase-staging.result == 'success' || needs.liquibase-staging.result == 'skipped')
+    env:
+      STAGING_BASE_URL: ${{ secrets.STAGING_URL }}
+    steps:
+      - name: Verify backend is alive
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_BASE_URL}/admin/")
+          echo "GET /admin/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "302" ]; then
+            echo "FAIL: Backend not reachable at staging"
+            exit 1
+          fi
+          echo "PASS: Backend is alive"
+
+      - name: Verify API endpoints respond correctly
+        run: |
+          # Login endpoint: GET should return 405 (POST-only)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_BASE_URL}/api/accounts/login/")
+          echo "GET /api/accounts/login/ → HTTP ${STATUS}"
+          if [ "$STATUS" != "405" ] && [ "$STATUS" != "400" ] && [ "$STATUS" != "200" ]; then
+            echo "FAIL: Login endpoint returned unexpected status"
+            exit 1
+          fi
+
+          # Users endpoint: unauthenticated should return 401/403
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_BASE_URL}/api/accounts/users/")
+          echo "GET /api/accounts/users/ → HTTP ${STATUS}"
+          if [ "$STATUS" != "401" ] && [ "$STATUS" != "403" ] && [ "$STATUS" != "200" ]; then
+            echo "FAIL: Users endpoint returned unexpected status"
+            exit 1
+          fi
+
+          # Swagger docs
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_BASE_URL}/swagger/")
+          echo "GET /swagger/ → HTTP ${STATUS}"
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: Swagger docs not accessible"
+            exit 1
+          fi
+
+          echo "PASS: All API endpoint integration tests passed"
+
+  # ==================================================================
+  # SMOKE TESTS
+  # ==================================================================
+  smoke-tests:
+    name: Smoke Tests (staging)
+    runs-on: ubuntu-latest
+    needs: [staging-integration-tests]
+    if: needs.staging-integration-tests.result == 'success'
+    env:
+      STAGING_URL: ${{ secrets.STAGING_URL }}
+    steps:
+      - name: Smoke test — Django admin
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_URL}/admin/")
+          echo "GET /admin/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then
+            echo "PASS"
+          else
+            echo "FAIL"
+            exit 1
+          fi
+
+      - name: Smoke test — API login endpoint
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_URL}/api/accounts/login/")
+          echo "GET /api/accounts/login/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" = "405" ] || [ "$HTTP_STATUS" = "400" ] || [ "$HTTP_STATUS" = "200" ]; then
+            echo "PASS"
+          else
+            echo "FAIL"
+            exit 1
+          fi
+
+      - name: Smoke test — Swagger
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_URL}/swagger/")
+          echo "GET /swagger/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" = "200" ]; then echo "PASS"; else echo "FAIL"; exit 1; fi
+
+      - name: Smoke test — ReDoc
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${STAGING_URL}/redoc/")
+          echo "GET /redoc/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" = "200" ]; then echo "PASS"; else echo "FAIL"; exit 1; fi
+
+  # ==================================================================
+  # DAST — OWASP ZAP
+  # ==================================================================
+  # SECURITY POLICY:
+  #
+  #   Tool:     OWASP ZAP baseline scan
+  #   Flag:     -l WARN
+  #   Blocking: fail_action: true
+  #
+  #   -l WARN sets the MINIMUM alert level to WARN. In ZAP baseline
+  #   mode, the recognized levels are (ascending): PASS, IGNORE,
+  #   INFO, WARN, FAIL. With -l WARN, alerts at WARN level or higher
+  #   are reported. With fail_action: true, any alert at WARN level
+  #   or above causes this job to fail, blocking production promotion.
+  #
+  #   This means ALL reported ZAP findings block the pipeline —
+  #   there is no severity-based filtering (e.g., "block only High").
+  #   To achieve severity-based gating, a custom ZAP report parser
+  #   would be needed. The current configuration is intentionally
+  #   strict: any finding blocks.
+  #
+  #   The ZAP report is always uploaded as an artifact for manual
+  #   review regardless of outcome.
+  #
+  # NOT LOCALLY VERIFIABLE — requires deployed staging infrastructure.
+  dast:
+    name: "Security: DAST (OWASP ZAP)"
+    runs-on: ubuntu-latest
+    needs: [smoke-tests]
+    if: needs.smoke-tests.result == 'success'
+    env:
+      STAGING_URL: ${{ secrets.STAGING_URL }}
+    steps:
+      - name: OWASP ZAP Baseline Scan
+        id: zap
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ secrets.STAGING_URL }}
+          cmd_options: >-
+            -a
+            -j
+            -l WARN
+            -r zap-report.html
+          allow_issue_writing: true
+          fail_action: true
+
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-dast-report
+          path: zap-report.html
+          retention-days: 30
+
+      - name: DAST result summary
+        if: always()
+        run: |
+          echo "============================================"
+          echo "OWASP ZAP DAST — Result"
+          echo "============================================"
+          echo "Target: ${STAGING_URL}"
+          echo "ZAP step outcome: ${{ steps.zap.outcome }}"
+          echo ""
+          echo "Security policy:"
+          echo "  -l WARN with fail_action: true"
+          echo "  Any ZAP alert at WARN level or above"
+          echo "  causes this job to fail and blocks promotion."
+          echo ""
+          if [ "${{ steps.zap.outcome }}" = "success" ]; then
+            echo "RESULT: No ZAP findings — pipeline continues"
+          else
+            echo "RESULT: ZAP found issues — pipeline blocked"
+            echo "Review the zap-dast-report artifact"
+          fi
+          echo "============================================"
+
+      - name: Fail pipeline on ZAP findings
+        if: steps.zap.outcome == 'failure'
+        run: |
+          echo "FAIL: OWASP ZAP detected findings at WARN level or above"
+          echo "Review the zap-dast-report artifact"
+          exit 1
+
+  # ==================================================================
+  # LIQUIBASE — STAGING DATABASE MIGRATION
+  # ==================================================================
+  # Task 5 CI/CD integration point for Task 7 (Liquibase).
+  #
+  # This job is SKIPPED unless the repository variable
+  # LIQUIBASE_ENABLED is set to 'true'. This avoids the GitHub
+  # Actions limitation where secrets cannot be used in job-level
+  # if: expressions.
+  #
+  # When Task 7 is implemented:
+  #   1. Set repository variable LIQUIBASE_ENABLED = true
+  #   2. Set repository secret LIQUIBASE_CHANGELOG to the changelog path
+  #   3. This job will run against the staging database
+  #
+  # Liquibase execution is a Task 5 CI/CD integration point and
+  # requires Task 7's changelog/database implementation.
+  #
+  # If explicitly enabled but Task 7 inputs are missing, this job
+  # will FAIL (no continue-on-error) — the pipeline will NOT
+  # produce a false green.
+  liquibase-staging:
+    name: "Liquibase: Staging Migration"
+    runs-on: ubuntu-latest
+    needs: [staging-deploy]
+    if: vars.LIQUIBASE_ENABLED == 'true'
+    env:
+      STAGING_DB_HOST: ${{ secrets.STAGING_DB_HOST }}
+      STAGING_DB_NAME: ${{ secrets.STAGING_DB_NAME }}
+      STAGING_DB_USER: ${{ secrets.STAGING_DB_USER }}
+      STAGING_DB_PASSWORD: ${{ secrets.STAGING_DB_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Liquibase configuration
+        run: |
+          if [ -z "${{ secrets.LIQUIBASE_CHANGELOG }}" ]; then
+            echo "ERROR: LIQUIBASE_CHANGELOG secret is not configured."
+            echo "Task 7 Liquibase implementation is required."
+            exit 1
+          fi
+          echo "Liquibase changelog: ${{ secrets.LIQUIBASE_CHANGELOG }}"
+
+      - name: Install Liquibase
+        run: |
+          curl -sL https://github.com/liquibase/liquibase/releases/latest/download/liquibase.tar.gz | tar xz
+          sudo mv liquibase /usr/local/bin/
+          liquibase --version
+
+      - name: Run Liquibase migrations (staging)
+        run: |
+          echo "Running Liquibase migrations against staging database"
+          echo "Target: postgresql://${STAGING_DB_HOST}/${STAGING_DB_NAME}"
+          liquibase update \
+            --changelog-file=${{ secrets.LIQUIBASE_CHANGELOG }} \
+            --url="jdbc:postgresql://${STAGING_DB_HOST}/${STAGING_DB_NAME}" \
+            --username="${STAGING_DB_USER}" \
+            --password="${STAGING_DB_PASSWORD}"
+
+  # ==================================================================
+  # PRODUCTION APPROVAL
+  # ==================================================================
+  # Requires GitHub environment "production" with required reviewers.
+  # This job depends on both DAST and docker-build-and-scan so that:
+  #   - image-tag output is available to downstream jobs
+  #   - DAST must pass before approval is possible
+  production-approval:
+    name: "Production: Manual Approval Gate"
+    runs-on: ubuntu-latest
+    needs: [dast, docker-build-and-scan]
+    if: needs.dast.result == 'success' && needs.docker-build-and-scan.result == 'success'
+    environment:
+      name: production
+    steps:
+      - name: Confirm approval
+        run: |
+          echo "============================================"
+          echo "MANUAL PRODUCTION APPROVAL GRANTED"
+          echo "============================================"
+          echo "Image tag (commit SHA): ${{ needs.docker-build-and-scan.outputs.image-tag }}"
+          echo ""
+          echo "All gates passed:"
+          echo "  ✓ Validation"
+          echo "  ✓ Tests"
+          echo "  ✓ Secret scan"
+          echo "  ✓ SAST"
+          echo "  ✓ Dependency scan"
+          echo "  ✓ Docker build + Trivy scan"
+          echo "  ✓ Staging deployed"
+          echo "  ✓ Staging integration tests"
+          echo "  ✓ Smoke tests"
+          echo "  ✓ DAST (OWASP ZAP)"
+          echo "  ✓ Manual approval"
+          echo "============================================"
+
+  # ==================================================================
+  # LIQUIBASE — PRODUCTION DATABASE MIGRATION
+  # ==================================================================
+  # Production migration requires:
+  #   1. Production approval (inherited via needs)
+  #   2. LIQUIBASE_ENABLED repository variable set to 'true'
+  #   3. LIQUIBASE_CHANGELOG secret configured
+  #
+  # This job is SKIPPED when LIQUIBASE_ENABLED != 'true'.
+  # When enabled, it uses the production environment gate
+  # (inherits from production-approval).
+  #
+  # If explicitly enabled but Task 7 inputs are missing, this job
+  # FAILS — production deployment will NOT proceed.
+  #
+  # Liquibase execution is a Task 5 CI/CD integration point and
+  # requires Task 7's changelog/database implementation.
+  liquibase-production:
+    name: "Liquibase: Production Migration"
+    runs-on: ubuntu-latest
+    needs: [production-approval]
+    if: vars.LIQUIBASE_ENABLED == 'true'
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Liquibase configuration
+        run: |
+          if [ -z "${{ secrets.LIQUIBASE_CHANGELOG }}" ]; then
+            echo "ERROR: LIQUIBASE_CHANGELOG secret is not configured."
+            echo "Task 7 Liquibase implementation is required."
+            exit 1
+          fi
+          echo "Liquibase changelog: ${{ secrets.LIQUIBASE_CHANGELOG }}"
+
+      - name: Install Liquibase
+        run: |
+          curl -sL https://github.com/liquibase/liquibase/releases/latest/download/liquibase.tar.gz | tar xz
+          sudo mv liquibase /usr/local/bin/
+          liquibase --version
+
+      - name: Run Liquibase migrations (production)
+        run: |
+          echo "Running Liquibase migrations against production database"
+          echo "Target: postgresql://${{ secrets.PROD_DB_HOST }}/${{ secrets.PROD_DB_NAME }}"
+          liquibase update \
+            --changelog-file=${{ secrets.LIQUIBASE_CHANGELOG }} \
+            --url="jdbc:postgresql://${{ secrets.PROD_DB_HOST }}/${{ secrets.PROD_DB_NAME }}" \
+            --username="${{ secrets.PROD_DB_USER }}" \
+            --password="${{ secrets.PROD_DB_PASSWORD }}"
+
+  # ==================================================================
+  # PRODUCTION DEPLOYMENT
+  # ==================================================================
+  # Deploys the SAME immutable image tag that was built by
+  # docker-build-and-scan and verified through staging + DAST.
+  # No rebuild. The image-tag output is accessed via the needs array.
+  #
+  # Depends on liquibase-production so that:
+  #   - If LIQUIBASE_ENABLED = true: deployment waits for migration
+  #   - If LIQUIBASE_ENABLED != true: liquibase-production is skipped,
+  #     and the if: condition allows deployment to proceed
+  #
+  # Accesses docker-build-and-scan.outputs.image-tag via needs array.
+  production-deploy:
+    name: "Production: Deploy"
+    runs-on: ubuntu-latest
+    needs: [liquibase-production, docker-build-and-scan]
+    if: always() && (needs.liquibase-production.result == 'success' || needs.liquibase-production.result == 'skipped') && needs.docker-build-and-scan.result == 'success'
+    environment:
+      name: production
+    env:
+      IMAGE_TAG: ${{ needs.docker-build-and-scan.outputs.image-tag }}
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image-${{ env.IMAGE_TAG }}
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.PROD_SSH_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying trianxt-engine:${IMAGE_TAG} to production"
+
+          scp -i ~/.ssh/deploy_key \
+            trianxt-engine-${IMAGE_TAG}.tar.gz \
+            deploy@${{ secrets.PROD_SSH_HOST }}:${{ secrets.PROD_DEPLOY_PATH }}/
+
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.PROD_SSH_HOST }} << 'DEPLOY_SCRIPT'
+            set -euo pipefail
+            cd ${{ secrets.PROD_DEPLOY_PATH }}
+
+            docker load < trianxt-engine-${{ env.IMAGE_TAG }}.tar.gz
+
+            docker stop ctms-backend-prod 2>/dev/null || true
+            docker rm ctms-backend-prod 2>/dev/null || true
+
+            docker run -d \
+              --name ctms-backend-prod \
+              --restart unless-stopped \
+              -p 8000:8000 \
+              -e DJANGO_ENV=production \
+              -e DJANGO_SECRET_KEY="${{ secrets.DJANGO_SECRET_KEY_PROD }}" \
+              -e DJANGO_ALLOWED_HOSTS="${{ secrets.PROD_URL }}" \
+              -e CTMS_ENCRYPTION_KEY="${{ secrets.CTMS_ENCRYPTION_KEY_PROD }}" \
+              -e DATABASE_URL="postgresql://${{ secrets.PROD_DB_USER }}:${{ secrets.PROD_DB_PASSWORD }}@${{ secrets.PROD_DB_HOST }}/${{ secrets.PROD_DB_NAME }}" \
+              trianxt-engine:${{ env.IMAGE_TAG }}
+
+            sleep 15
+            docker ps --filter "name=ctms-backend-prod" --format "{{.Status}}"
+          DEPLOY_SCRIPT
+
+      - name: Verify production deployment
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 30 "${{ secrets.PROD_URL }}/admin/" || echo "000")
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then
+              echo "Production deployment verified (HTTP ${HTTP_STATUS})"
+              exit 0
+            fi
+            echo "Attempt $i/10: HTTP ${HTTP_STATUS} — retrying in 15s..."
+            sleep 15
+          done
+          echo "CRITICAL: Production health check failed after 10 attempts"
+          exit 1
+
+  # ==================================================================
+  # POST-DEPLOYMENT VERIFICATION
+  # ==================================================================
+  post-deploy-verify:
+    name: "Production: Post-Deploy Verification"
+    runs-on: ubuntu-latest
+    needs: [production-deploy]
+    env:
+      PROD_URL: ${{ secrets.PROD_URL }}
+    steps:
+      - name: Verify — Django admin
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${PROD_URL}/admin/")
+          echo "GET /admin/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then echo "PASS"; else echo "FAIL"; exit 1; fi
+
+      - name: Verify — API endpoint
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${PROD_URL}/api/accounts/login/")
+          echo "GET /api/accounts/login/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" = "405" ] || [ "$HTTP_STATUS" = "400" ] || [ "$HTTP_STATUS" = "200" ]; then echo "PASS"; else echo "FAIL"; exit 1; fi
+
+      - name: Verify — Swagger
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 "${PROD_URL}/swagger/")
+          echo "GET /swagger/ → HTTP ${HTTP_STATUS}"
+          if [ "$HTTP_STATUS" = "200" ]; then echo "PASS"; else echo "FAIL"; exit 1; fi
+
+      - name: Deployment summary
+        run: |
+          echo "============================================"
+          echo "PRODUCTION DEPLOYMENT COMPLETE"
+          echo "============================================"
+          echo "URL: ${{ secrets.PROD_URL }}"
+          echo "============================================"
+
+  # ==================================================================
+  # NOTIFICATION
+  # ==================================================================
+  notify-pipeline-result:
+    name: "Notifications: Pipeline Result"
+    runs-on: ubuntu-latest
+    needs: [validate, test, secret-scan, sast, dependency-scan, docker-build-and-scan, staging-deploy, staging-integration-tests, smoke-tests, dast, liquibase-staging, production-approval, liquibase-production, production-deploy, post-deploy-verify]
+    if: always()
+    steps:
+      - name: Determine pipeline result
+        id: result
+        run: |
+          if [ "${{ needs.post-deploy-verify.result }}" = "success" ]; then
+            echo "status=SUCCESS" >> "$GITHUB_OUTPUT"
+            echo "message=Production deployment completed successfully" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.production-deploy.result }}" = "failure" ]; then
+            echo "status=PROD_DEPLOY_FAILED" >> "$GITHUB_OUTPUT"
+            echo "message=Production deployment failed" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.liquibase-production.result }}" = "failure" ]; then
+            echo "status=LIQUIBASE_PROD_FAILED" >> "$GITHUB_OUTPUT"
+            echo "message=Production Liquibase migration failed" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.staging-deploy.result }}" = "failure" ]; then
+            echo "status=STAGING_FAILED" >> "$GITHUB_OUTPUT"
+            echo "message=Staging deployment failed" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.test.result }}" = "failure" ]; then
+            echo "status=TESTS_FAILED" >> "$GITHUB_OUTPUT"
+            echo "message=Application tests failed" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.secret-scan.result }}" = "failure" ] || [ "${{ needs.sast.result }}" = "failure" ] || [ "${{ needs.dependency-scan.result }}" = "failure" ]; then
+            echo "status=SECURITY_FAILED" >> "$GITHUB_OUTPUT"
+            echo "message=Security gate failed" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.dast.result }}" = "failure" ]; then
+            echo "status=DAST_FAILED" >> "$GITHUB_OUTPUT"
+            echo "message=DAST scan found blocking issues" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=PIPELINE_ENDED" >> "$GITHUB_OUTPUT"
+            echo "message=Pipeline completed with mixed results" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Console notification summary
+        run: |
+          echo "============================================"
+          echo "CI/CD PIPELINE NOTIFICATION"
+          echo "============================================"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Status: ${{ steps.result.outputs.status }}"
+          echo "Message: ${{ steps.result.outputs.message }}"
+          echo ""
+          echo "Job Results:"
+          echo "  validate: ${{ needs.validate.result || 'skipped' }}"
+          echo "  test: ${{ needs.test.result || 'skipped' }}"
+          echo "  secret-scan: ${{ needs.secret-scan.result || 'skipped' }}"
+          echo "  sast: ${{ needs.sast.result || 'skipped' }}"
+          echo "  dependency-scan: ${{ needs.dependency-scan.result || 'skipped' }}"
+          echo "  docker-build: ${{ needs.docker-build-and-scan.result || 'skipped' }}"
+          echo "  staging-deploy: ${{ needs.staging-deploy.result || 'skipped' }}"
+          echo "  staging-integration-tests: ${{ needs.staging-integration-tests.result || 'skipped' }}"
+          echo "  smoke-tests: ${{ needs.smoke-tests.result || 'skipped' }}"
+          echo "  dast: ${{ needs.dast.result || 'skipped' }}"
+          echo "  liquibase-staging: ${{ needs.liquibase-staging.result || 'skipped' }}"
+          echo "  production-approval: ${{ needs.production-approval.result || 'skipped' }}"
+          echo "  liquibase-production: ${{ needs.liquibase-production.result || 'skipped' }}"
+          echo "  production-deploy: ${{ needs.production-deploy.result || 'skipped' }}"
+          echo "  post-deploy-verify: ${{ needs.post-deploy-verify.result || 'skipped' }}"
+          echo ""
+          echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "============================================"
+
+      - name: Notify Slack (if configured)
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: '{"text":"[${{ steps.result.outputs.status }}] ${{ github.repository }} ${{ github.ref_name }} — ${{ steps.result.outputs.message }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

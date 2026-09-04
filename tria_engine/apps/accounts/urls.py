@@ -7,6 +7,7 @@ from .views import (
     UserListAPI,
     RegisterAPI,
     LoginAPI,
+    LogoutAPI,
     LoginMFAAPI,
     VerifyLoginOTPAPI,
     ForgotPasswordAPI,
@@ -47,6 +48,12 @@ urlpatterns = [
         "login/",
         LoginAPI.as_view(),
         name="login-api"
+    ),
+
+    path(
+        "logout/",
+        LogoutAPI.as_view(),
+        name="logout-api"
     ),
     
     path(
